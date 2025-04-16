@@ -1,0 +1,9 @@
+This product includes software developed by Intel Corporation, which is licensed under the Apache License 2.0.
+Copyright (c) 2021-2024 Intel Corporation
+
+This product includes modifications by Krzysztof Badziak, Copyright (c) 2025, licensed under the MIT License.
+
+Significant changes:
+- Rewrote the profiler basically from scratch, with the same overall idea, but in much simpler manner viable for using in unrelated projects.
+- Made it even faster than Intel version by using custom TLS and global inline singleton-like profiler instance and by allowing double-events.
+- Added Windows support.
