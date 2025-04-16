@@ -4,7 +4,7 @@ This repository is an easy-to-integrate profiling (or rather, tracing) engine. I
 
 It is very fast compared to other time-tracing mechanisms, but at the expense of not being very portable. Although, it should work fine on Windows 10+ and Ubuntu 20+ OSes and x64 CPU architecture.
 
-It is ideal if you need to profile the execution of a system that has complicated multithreaded structure and that exhibits various phenomena you would want to observe that would be missed by using sampling profilers like VTune or Perf or by using simple time recording mechanisms like std::chrono which induce multiple orders of magnitude more overhead than this project and could result in disturbing the system too much to observe those phenomena.
+It is ideal if you need to profile the execution of a system that has complicated multithreaded structure and that exhibits various phenomena you would want to observe that would be missed by using sampling profilers like VTune or Perf or by using simple time recording mechanisms like std::chrono which induce multiple orders of magnitude more overhead than this project and could result in disturbing the system too much to observe those phenomena. So, if you have got some multithreaded performance related Heisenbug in your code, it could be really helpful.
 
 This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool. But, if performance is not >that< critical for you, you can change it freely to use things like ring buffers or whatever (initial code I made, actually did exactly that ^^).
 
