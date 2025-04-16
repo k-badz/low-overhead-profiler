@@ -8,7 +8,7 @@ It is ideal if you need to profile the execution of a system that has complicate
 
 This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool. But, if performance is not >that< critical for you, you can change it freely to use things like ring buffers or whatever (initial code I made, actually did exactly that ^^).
 
-For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my (article)[https://k-badz.github.io/optimization/low-overhead-profiler/].
+For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 
 ## How to setup:
 
@@ -41,7 +41,7 @@ For more details about motivation, design decisions, usage, overhead causes, lim
 
 This is profiler project I designed and implemented during my employment at Intel Corporation. 
 At some point it was open sourced under Apache License, Version 2.0 at:
-https://github.com/HabanaAI/gaudi-pytorch-bridge/blob/v1.20.0/pytorch_helpers/low_overhead_profiler/
+`https://github.com/HabanaAI/gaudi-pytorch-bridge/blob/v1.20.0/pytorch_helpers/low_overhead_profiler/`
 (disclaimer: version linked above contains also contributions from other engineers and is very project-specific)
 
 As that code contains various Gaudi and Intel -specific parts which makes it hard for other projects to use out of the box, I decided to distill the original idea I had in mind when it was designed.
