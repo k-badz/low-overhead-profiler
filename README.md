@@ -1,4 +1,4 @@
-# Low overhead profiler.
+# Low overhead profiler
 
 This repository is an easy-to-integrate profiling (or rather, tracing) engine. It allows you to trace multithreaded applications with low overhead per event generated (usual overhead range per event is 8-12 nanoseconds, you need two events to record a call).
 
