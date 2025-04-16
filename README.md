@@ -30,6 +30,13 @@ g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -Wno-format -g -st
 4. Trace file will be generated automatically in your working directory.
 5. Open the trace in chrome://tracing or in https://ui.perfetto.dev/
 
+## Samples
+![alt text](img/1.jpg)
+![alt text](img/2.jpg)
+
+### You liked it? ^^
+[![buy me a coffee](https://www.buymeacoffee.com/assets/img/custom_images/yellow_img.png)](https://buymeacoffee.com/kbaggio)
+
 ## Notice
 
 This is profiler project I designed and implemented during my employment at Intel Corporation. 
