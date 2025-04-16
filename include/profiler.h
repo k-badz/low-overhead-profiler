@@ -44,9 +44,18 @@
 
 namespace LOP {
 
+// Self-explanatory, I guess.
 void profiler_enable();
 void profiler_disable();
+
+// You can use suffix to create multiple files in one process session.
 void profiler_flush(const char* suffix = nullptr);
+
+// All events require a string that will be used as a name of the event and this is what
+// you will see on the trace. The pointer that you supply to the emit functions must be alive
+// at the point of profiler_flush() call. The profiler will not copy the string, it will just
+// store the pointer, because copying it around would kill the performance. So it is safest
+// to just use some static strings as in example.
 
 // Simple events.
 void emit_begin_event(const char* name);
@@ -96,4 +105,12 @@ public:
         emit_end_event(this->name);
     }
 };
+
+// This macro will create a scoped profile with the name of the function.
+#if defined(_WIN32) || defined(_WIN64)
+#   define LOP_PROFILE_FUNC LOP::SimpleScopedProfile func_scope_profiler(__FUNCSIG__);
+#else
+#   define LOP_PROFILE_FUNC LOP::SimpleScopedProfile func_scope_profiler(__PRETTY_FUNCTION__);
+#endif
+
 }

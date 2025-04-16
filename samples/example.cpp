@@ -4,8 +4,16 @@
 #include <thread>
 #include <chrono>
 
-int main() {
+void some_sleeping_function()
+{   LOP_PROFILE_FUNC
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+}
+
+int main()
+{
     LOP::profiler_enable();
+
+    LOP::emit_counter_event("some_resource", 0);
 
     LOP::emit_begin_event("test part A");
 
@@ -14,7 +22,7 @@ int main() {
     LOP::emit_begin_event("main thread is starting thread 1");
     std::thread t1([]() {
         LOP::emit_begin_event("thread1 sleeping");
-        std::this_thread::sleep_for(std::chrono::milliseconds(12));
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
         LOP::emit_end_event("thread1 sleeping");
         LOP::emit_counter_event("some_resource", 2);
         });
@@ -22,7 +30,7 @@ int main() {
 
     LOP::emit_counter_event("some_resource", 3);
     LOP::emit_begin_event("main thread sleeping");
-    std::this_thread::sleep_for(std::chrono::milliseconds(12));
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
     LOP::emit_end_event("main thread sleeping");
     LOP::emit_endbegin_event("test part A", "test part B");
 
@@ -47,7 +55,11 @@ int main() {
         LOP::emit_end_event("loop iteration");
     }
 
+    some_sleeping_function();
+
     LOP::emit_end_event("test part C");
+
+    LOP::emit_counter_event("some_resource", 0);
     LOP::profiler_disable();
     LOP::profiler_flush();
     return 0;
