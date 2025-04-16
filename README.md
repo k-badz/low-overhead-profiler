@@ -8,7 +8,7 @@ It is ideal if you need to profile the execution of a system that has complicate
 
 This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool. But, if performance is not >that< critical for you, you can change it freely to use things like ring buffers or whatever (initial code I made, actually did exactly that ^^).
 
-For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. I'll create a blog post about it soon on https://k-badz.github.io/. Stay tuned.
+For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my (article)[https://k-badz.github.io/optimization/low-overhead-profiler/].
 
 ## How to setup:
 

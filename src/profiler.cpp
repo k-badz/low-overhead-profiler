@@ -53,7 +53,7 @@
 #include "profiler.h"
 
 #define CUSTOM_TLS_SIZE 0x10000
-#define LOP_BUFFER_SIZE 0x1000000LLU
+#define LOP_BUFFER_SIZE 0x400000LLU
 
 #if defined(_WIN32) || defined(_WIN64)
 # define compiler_barrier() _ReadWriteBarrier()
