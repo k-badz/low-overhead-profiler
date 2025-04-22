@@ -49,6 +49,7 @@
 #include <chrono>
 #include <ctime>
 #include <algorithm>
+#include <atomic>
 
 #include "profiler.h"
 
@@ -81,7 +82,6 @@ enum event_type : uint32_t {
 struct Event {
     uint64_t timestamp;
     const char* name;
-    uint64_t thread_id;
     uint64_t metadata;
     event_type type;
 };
@@ -90,6 +90,7 @@ struct EventBuffer {
     Event* next_event; // Must be first field!!! For simplicty, because its accessed
                        // in critical part of asm and I don't want extra offsets there.
     Event* events;
+    Event* events_backup;
     uint64_t thread_id = 0;
 
     EventBuffer();
@@ -100,6 +101,12 @@ struct CustomTLS {
     EventBuffer event_buffer;
 };
 
+struct BufferState {
+    Event* next_event;
+    Event* events;
+    uint64_t thread_id = 0;
+};
+
 struct ProfilerEngine {
 
     ProfilerEngine();
@@ -107,32 +114,42 @@ struct ProfilerEngine {
 
     void add_event_buffer(EventBuffer* event_buffer);
     void remove_event_buffer(EventBuffer* event_buffer);
+    void handle_exhausted_buffers(EventBuffer* signalling_event_buffer);
 
     void enable();
     void disable();
     void flush(const char* suffix = nullptr);
+    void flush_buffers(const char* suffix, const std::vector<BufferState>& buffers);
 
     CustomTLS** custom_tls; // Must be first field!!! For simplicty, because its accessed
                             // in critical part of asm and I don't want extra offsets there.
-    volatile bool enabled;
-    volatile bool flushed;
-    volatile bool running;
+    bool enabled;
+    bool flushed;
+    bool running;
 
     uint64_t tsc_enable;
-    uint64_t tsc_disable;
 
     double ticks_per_ns_ratio;
 
     std::mutex buffers_mutex;
+    std::mutex exhaustion_mutex;
+    std::mutex control_mutex;
+    std::atomic<uint64_t> active_exhaustion_count = 0;
+    std::atomic<uint64_t> total_exhaustion_count = 0;
+
     std::list<EventBuffer*> event_buffers;
-    std::chrono::system_clock::time_point time_enable;
-    std::chrono::system_clock::time_point time_disable;
+    std::chrono::system_clock::time_point time_enable;\
 };
+
+inline ProfilerEngine g_lop_inst;
 
 extern "C" {
     // For windows, these are implemented in profiler_asm.asm (via MASM/ml64.exe).
     // For linux, these are implemented in profiler_asm.cpp (via inline assembly).
     uint64_t _asm_fast_rdtsc();
+    uint64_t _asm_get_tid();
+
+    // Default event emitters.
     void _asm_emit_begin_event(ProfilerEngine*, const char*);
     void _asm_emit_end_event(ProfilerEngine*, const char*);
     void _asm_emit_endbegin_event(ProfilerEngine*, const char*, const char*);
@@ -146,14 +163,14 @@ extern "C" {
     void _asm_emit_flow_start_event(ProfilerEngine*, const char*, uint64_t);
     void _asm_emit_flow_finish_event(ProfilerEngine*, const char*, uint64_t);
 
-    uint64_t _asm_get_tid();
-
     CustomTLS* allocate_custom_tls() {
         return new CustomTLS;
     }
-};
 
-inline ProfilerEngine g_lop_inst;
+    void exhaustion_handler(EventBuffer* signalling_event_buffer) {
+        g_lop_inst.handle_exhausted_buffers(signalling_event_buffer);
+    }
+};
 
 void profiler_enable() {
     g_lop_inst.enable();
@@ -171,7 +188,6 @@ ProfilerEngine::ProfilerEngine()
     flushed(true),
     running(false),
     tsc_enable(0),
-    tsc_disable(0),
     ticks_per_ns_ratio(0.0)
 {
     char* disable_string = std::getenv("LOP_DISABLE");
@@ -202,6 +218,7 @@ ProfilerEngine::ProfilerEngine()
 }
 
 void ProfilerEngine::enable() {
+    const std::lock_guard<std::mutex> lock(control_mutex);
     if (running && !enabled) {
         flushed = false;
         enabled = true;
@@ -215,18 +232,157 @@ void ProfilerEngine::enable() {
 }
 
 void ProfilerEngine::disable() {
+    const std::lock_guard<std::mutex> lock(control_mutex);
     if (running && enabled) {
         // Generate special event so that we can track on the trace at what point of UNIX time it was disabled.
         emit_begin_event("lop_engine_disable");
-        tsc_disable = _asm_fast_rdtsc();
-        time_disable = std::chrono::system_clock::now();
+        auto time_disable = std::chrono::system_clock::now();
         emit_end_meta_event("lop_engine_disable", std::chrono::duration_cast<std::chrono::nanoseconds>(time_disable.time_since_epoch()).count());
         
         enabled = false;
     } 
 }
 
+void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferState>& buffers) {
+    uint64_t events_counter = 0;
+    for (const BufferState& buffer : buffers) {
+        uint64_t events_in_buffer = buffer.next_event - buffer.events;
+        printf("Got %llu/%llu (%llu%%) events in buffer of thread: %llx\n",
+            events_in_buffer,
+            LOP_BUFFER_SIZE,
+            events_in_buffer * 100 / LOP_BUFFER_SIZE,
+            buffer.thread_id);
+        events_counter += events_in_buffer;
+    }
+
+    printf("TOTAL EVENTS: %llu\n", events_counter);
+
+    auto pid = get_process_id();
+    auto tsc_disable = _asm_fast_rdtsc();
+    auto time_disable = std::chrono::system_clock::now();
+
+    double unix_time_diff_ns = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(time_disable.time_since_epoch()).count() -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(time_enable.time_since_epoch()).count()
+        );
+
+    char name[200];
+    if (suffix) snprintf(name, 200, "events_pid%u_ts%llu_%s.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000), suffix);
+    else        snprintf(name, 200, "events_pid%u_ts%llu.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000));
+
+    std::string cleaned_name(name);
+    std::replace(cleaned_name.begin(), cleaned_name.end(), '/', '_');
+    std::replace(cleaned_name.begin(), cleaned_name.end(), '\\', '_');
+
+    printf("Creating file: %s\n", cleaned_name.c_str()); fflush(stdout);
+    auto file = fopen(name, "w");
+    fprintf(file,"{\"displayTimeUnit\": \"ns\", \"traceEvents\": [\n");
+
+    // Find first event, timewise.
+    uint64_t tsc_base = std::numeric_limits<uint64_t>::max();
+    for (const BufferState& buffer : buffers) {
+        const auto& event = buffer.events[0];
+        if (event.timestamp < tsc_base) tsc_base = event.timestamp;
+    }
+
+    if (unix_time_diff_ns > 1000000000.0) {
+        // For long (>1s) profiling sessions, overhead from start/end timestamp measurements is small enough that
+        // if we base our frequency on those measurements, it will bring more accurate results than hacky estimation
+        // code in the constructor.
+        double tsc_ticks = static_cast<double>(tsc_disable - tsc_enable);
+        ticks_per_ns_ratio = tsc_ticks / unix_time_diff_ns;
+        printf("Long run detected. Will use frequency measured over time.\n");
+        printf("Measured %f ticks per nanosecond\n", ticks_per_ns_ratio);
+    }
+    std::map<uint64_t, Event*> COUNTER_events;
+    for (const BufferState& buffer : buffers) {
+        Event* event = buffer.events;
+        uint64_t event_thread_id = buffer.thread_id;
+        for (; event < buffer.next_event; ++event) {
+            auto tsc_diff = event->timestamp - tsc_base;
+            auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
+
+            if (event->type == COUNTER_INT) {
+                // Sort COUNTER_INT events in the meantime using ordered map and process them later.
+                // Chrome tracing requires that they are sorted by timestamps, otherwise it glitches.
+                // And no, that "feature" is not documented anywhere.
+                COUNTER_events.insert({ event->timestamp, event });
+            }
+            else if (event->type == CALL_BEGIN || event->type == CALL_END) {
+                const char* eventPh = (event->type == CALL_BEGIN) ? "B" : "E";
+                fprintf(file,
+                    "{"
+                    "\"tid\":\"%llx\","
+                    "\"pid\":%u,"
+                    "\"ts\":%llu.%03llu,"
+                    "\"name\":\"%s\","
+                    "\"ph\":\"%s\""
+                    "},\n",
+                    event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh);
+            }
+            else if (event->type == CALL_BEGIN_META || event->type == CALL_END_META) {
+                const char* eventPh = (event->type == CALL_BEGIN_META) ? "B" : "E";
+                const char* metaName = (event->type == CALL_BEGIN_META) ? "b_meta" : "e_meta";
+                fprintf(file,
+                    "{"
+                    "\"tid\":\"%llx\","
+                    "\"pid\":%u,"
+                    "\"ts\":%llu.%03llu,"
+                    "\"name\":\"%s\","
+                    "\"ph\":\"%s\","
+                    "\"args\":{"
+                    "\"%s\":\"%llx\""
+                    "}"
+                    "},\n",
+                    event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh, metaName, event->metadata);
+            }
+            else if (event->type == FLOW_START || event->type == FLOW_FINISH) {
+                const char* eventPh = (event->type == FLOW_START) ? "s" : "f";
+                fprintf(file,
+                    "{"
+                    "\"tid\":\"%llx\","
+                    "\"pid\":%u,"
+                    "\"ts\":%llu.%03llu,"
+                    "\"name\":\"flow\","
+                    "\"ph\":\"%s\","
+                    "\"bp\":\"e\","
+                    "\"id\":%llu,"
+                    "\"args\":{"
+                    "\"flow_id\":\"%llx\""
+                    "}"
+                    "},\n",
+                    event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, event->metadata, event->metadata);
+            }
+            else {
+                printf("Unknown event type. Bailing out.\n");
+                return;
+            }
+        }
+    }
+
+    for (const auto& [timestamp, event] : COUNTER_events) {
+        auto tsc_diff = timestamp - tsc_base;
+        auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
+        fprintf(file,
+            "{"
+            "\"pid\": %u,"
+            "\"ts\":%llu.%03llu,"
+            "\"name\":\"%s\","
+            "\"ph\":\"C\","
+            "\"args\":{"
+            "\"val\":%llu"
+            "}"
+            "},\n",
+            pid, time_ns / 1000, time_ns % 1000, event->name, event->metadata);
+    }
+
+    fprintf(file,"{}]}");
+    fclose(file);
+}
+
 void ProfilerEngine::flush(const char* suffix) {
+    const std::lock_guard<std::mutex> control_lock(control_mutex);
+    const std::lock_guard<std::mutex> buffer_lock(buffers_mutex);
     printf("ProfilerEngine::flush at PID:%u\n", get_process_id());
     if (suffix) printf("Flushing for suffix: \"%s\"\n", suffix);
     fflush(stdout);
@@ -241,154 +397,26 @@ void ProfilerEngine::flush(const char* suffix) {
         return;
     }
 
-    std::vector<Event> events_table;
-
-    uint64_t events_counter = 0;
+    std::vector<BufferState> buffers;
+    for (auto& event_buffer : event_buffers)
     {
-        const std::lock_guard<std::mutex> lock(buffers_mutex);
+        BufferState buffer;
+        buffer.events = event_buffer->events;
+        buffer.next_event = event_buffer->next_event;
+        buffer.thread_id = event_buffer->thread_id;
 
-        for (EventBuffer* buffer : event_buffers) {
-            uint64_t events_in_buffer = buffer->next_event - buffer->events;
-            printf("Got %llu/%llu (%llu%%) events in buffer of thread: %llx\n",
-                events_in_buffer,
-                LOP_BUFFER_SIZE,
-                events_in_buffer * 100 / LOP_BUFFER_SIZE,
-                buffer->thread_id);
-            events_counter += events_in_buffer;
-        }
-
-        events_table.resize(events_counter);
-
-        uint64_t event_offset = 0;
-        for (EventBuffer* buffer : event_buffers) {
-            uint64_t events_in_buffer = buffer->next_event - buffer->events;
-            memcpy(events_table.data() + event_offset, buffer->events, events_in_buffer * sizeof(Event));
-            
-            // Patch thread ids.
-            for (uint64_t i = 0; i < events_in_buffer; i++) {
-                events_table.data()[i + event_offset].thread_id = buffer->thread_id;
-            }
-
-            event_offset += events_in_buffer;
-            buffer->next_event = buffer->events; // re-initialize this buffer
-        }
+        buffers.push_back(buffer);
     }
 
-    printf("TOTAL EVENTS: %llu\n", events_counter);
+    flush_buffers(suffix, buffers);
 
-    if (events_counter > 0) {
-        auto pid = get_process_id();
+    for (EventBuffer* buffer : event_buffers) {
+        buffer->next_event = buffer->events; // re-initialize this buffer
+    }
 
-        double unix_time_diff_ns = static_cast<double>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(time_disable.time_since_epoch()).count() -
-            std::chrono::duration_cast<std::chrono::nanoseconds>(time_enable.time_since_epoch()).count()
-            );
-
-        char name[200];
-        if (suffix) snprintf(name, 200, "events_pid%u_ts%llu_%s.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000), suffix);
-        else        snprintf(name, 200, "events_pid%u_ts%llu.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000));
-
-        std::string cleaned_name(name);
-        std::replace(cleaned_name.begin(), cleaned_name.end(), '/', '_');
-        std::replace(cleaned_name.begin(), cleaned_name.end(), '\\', '_');
-
-        printf("Creating file: %s\n", cleaned_name.c_str()); fflush(stdout);
-        auto file = fopen(name, "w");
-        fprintf(file,"{\"displayTimeUnit\": \"ns\", \"traceEvents\": [\n");
-
-        // Find first event, timewise.
-        uint64_t tsc_base = std::numeric_limits<uint64_t>::max();
-        for (uint64_t i = 0; i < events_counter; ++i) {
-            const auto& event = events_table[i];
-            if (event.timestamp < tsc_base) tsc_base = event.timestamp;
-        }
-
-        if (unix_time_diff_ns > 1000000000.0) {
-            // For long (>1s) profiling sessions, overhead from start/end timestamp measurements is small enough that
-            // if we base our frequency on those measurements, it will bring more accurate results than hacky estimation
-            // code in the constructor.
-            double tsc_ticks = static_cast<double>(tsc_disable - tsc_enable);
-            ticks_per_ns_ratio = tsc_ticks / unix_time_diff_ns;
-            printf("Long run detected. Will use frequency measured over time.\n");
-            printf("Measured %f ticks per nanosecond\n", ticks_per_ns_ratio);
-        }
-        std::map<uint64_t, Event*> COUNTER_events;
-        for (uint64_t i = 0; i < events_counter; ++i) {
-            const auto& event = events_table[i];
-            auto tsc_diff = event.timestamp - tsc_base;
-            auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
-
-            if (event.type == COUNTER_INT) {
-                // Sort COUNTER_INT events in the meantime using ordered map and process them later.
-                // Chrome tracing requires that they are sorted by timestamps, otherwise it glitches.
-                // And no, that "feature" is not documented anywhere.
-                COUNTER_events.insert({ event.timestamp, &events_table[i] });
-            } else if (event.type == CALL_BEGIN || event.type == CALL_END) {
-                const char* eventPh = (event.type == CALL_BEGIN) ? "B" : "E";
-                fprintf(file,
-                    "{"
-                        "\"tid\":\"%llx\","
-                        "\"pid\":%u,"
-                        "\"ts\":%llu.%03llu,"
-                        "\"name\":\"%s\","
-                        "\"ph\":\"%s\""
-                    "},\n",
-                    event.thread_id, pid, time_ns/1000, time_ns%1000, event.name, eventPh);
-            } else if (event.type == CALL_BEGIN_META || event.type == CALL_END_META) {
-                const char* eventPh = (event.type == CALL_BEGIN_META) ? "B" : "E";
-                const char* metaName = (event.type == CALL_BEGIN_META) ? "b_meta" : "e_meta";
-                fprintf(file,
-                    "{"
-                        "\"tid\":\"%llx\","
-                        "\"pid\":%u,"
-                        "\"ts\":%llu.%03llu,"
-                        "\"name\":\"%s\","
-                        "\"ph\":\"%s\","
-                        "\"args\":{"
-                            "\"%s\":\"%llx\""
-                        "}"
-                    "},\n",
-                    event.thread_id, pid, time_ns / 1000, time_ns % 1000, event.name, eventPh, metaName, event.metadata);
-            } else if (event.type == FLOW_START || event.type == FLOW_FINISH) {
-                const char* eventPh = (event.type == FLOW_START) ? "s" : "f";
-                fprintf(file,
-                    "{"
-                        "\"tid\":\"%llx\","
-                        "\"pid\":%u,"
-                        "\"ts\":%llu.%03llu,"
-                        "\"name\":\"flow\","
-                        "\"ph\":\"%s\","
-                        "\"bp\":\"e\","
-                        "\"id\":%llu,"
-                        "\"args\":{"
-                            "\"flow_id\":\"%llx\""
-                        "}"
-                    "},\n",
-                    event.thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, event.metadata, event.metadata);
-            } else {
-                printf("Unknown event type. Bailing out.\n");
-                return;
-            }
-        }
-
-        for (const auto& [timestamp, event] : COUNTER_events) {
-            auto tsc_diff = timestamp - tsc_base;
-            auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
-            fprintf(file,
-                "{"
-                    "\"pid\": %u,"
-                    "\"ts\":%llu.%03llu,"
-                    "\"name\":\"%s\","
-                    "\"ph\":\"C\","
-                    "\"args\":{"
-                        "\"val\":%llu"
-                    "}"
-                "},\n",
-                pid, time_ns / 1000, time_ns % 1000, event->name, event->metadata);
-        }
-
-        fprintf(file,"{}]}");
-        fclose(file);
+    while (active_exhaustion_count) {
+        // User flush needs to wait for all internal exhaustions flushes to finish.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     flushed = true;
@@ -420,9 +448,87 @@ void ProfilerEngine::remove_event_buffer(EventBuffer* event_buffer) {
     event_buffers.remove(event_buffer);
 }
 
+void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buffer) {
+    // Allow only one thread to perform exhaustion handling.
+    if (exhaustion_mutex.try_lock())
+    {
+        control_mutex.lock();
+        buffers_mutex.lock();
+        // Now we are fully locked. Double-check if someone else
+        // didn't cleanup the buffer already.
+        if (signalling_event_buffer->events_backup - signalling_event_buffer->events < LOP_BUFFER_SIZE) {
+            buffers_mutex.unlock();
+            control_mutex.unlock();
+            exhaustion_mutex.unlock();
+            return;
+        }
+
+        ++active_exhaustion_count;
+        ++total_exhaustion_count;
+
+        std::vector<BufferState> exhausted_buffers;
+        exhausted_buffers.reserve(event_buffers.size());
+
+        for (auto& event_buffer : event_buffers)
+        {
+            BufferState exhausted_buffer;
+            exhausted_buffer.events = event_buffer->events;
+            exhausted_buffer.next_event = event_buffer->next_event;
+            exhausted_buffer.thread_id = event_buffer->thread_id;
+
+            exhausted_buffers.push_back(exhausted_buffer);
+
+            // This hot swap might cause issues because we could get false negative exhaustion checks.
+            // But thanks to compiler barrier, in worst case it will put such event in new table anyway...
+            // ... which is good, actually.
+            event_buffer->next_event = event_buffer->events_backup;
+            compiler_barrier();
+            event_buffer->events = event_buffer->events_backup;
+        }
+
+        // At this point profiler already works on new buffers. We have some time to allocate new backup.
+        // If profiler manages to exhaust one of its buffers at this point, all events will be dropped
+        // till we unlock the exhaustion_mutex.
+        for (auto& event_buffer : event_buffers)
+        {
+            event_buffer->events_backup = new Event[LOP_BUFFER_SIZE];
+        }
+
+        // Now we can unlock the mutexes as events tables are fully corrected so we could freely enter this
+        // function again from any another thread.
+        buffers_mutex.unlock();
+        control_mutex.unlock();
+        exhaustion_mutex.unlock();
+
+        // Now we can process all events in the saved exhausted buffers, but we will do so in other thread
+        // to not delay user execution too much as this process is very slow.
+        std::thread([&, exhausted_buffers = std::move(exhausted_buffers)]() {
+            // Save exhausted buffers to the disk.
+            std::string suffix = "exh_" + std::to_string(total_exhaustion_count.load());
+            printf("saving to disk, exhaustion # %llu\n", total_exhaustion_count.load());
+            flush_buffers(suffix.c_str(), exhausted_buffers);
+
+            // Cleanup buffers.
+            for (auto& event_buffer : exhausted_buffers)
+            {
+                delete[] event_buffer.events;
+            }
+
+            --active_exhaustion_count;
+        }).detach();
+    }
+}
+
 EventBuffer::EventBuffer() {
     thread_id = _asm_get_tid();
     events = new Event[LOP_BUFFER_SIZE];
+
+#if LOP_SAFER
+    events_backup = new Event[LOP_BUFFER_SIZE];
+#else
+    events_backup = nullptr;
+#endif
+
     next_event = events;
     if (events) {
         g_lop_inst.add_event_buffer(this);
@@ -440,87 +546,72 @@ EventBuffer::~EventBuffer() {
         events = nullptr;
     }
 
+    if (events_backup) {
+        delete[] events_backup;
+        events_backup = nullptr;
+    }
+
     thread_id = -1;
     printf("EventBuffer::~EventBuffer finished\n"); fflush(stdout);
 }
 
 void emit_begin_event(const char* name) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_begin_event(&g_lop_inst, name);
-    }
+    if (g_lop_inst.enabled) _asm_emit_begin_event(&g_lop_inst, name);
     compiler_barrier();
 }
 
 void emit_end_event(const char* name) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_end_event(&g_lop_inst, name);
-    }
+    if (g_lop_inst.enabled) _asm_emit_end_event(&g_lop_inst, name);
     compiler_barrier();
 }
 
 void emit_endbegin_event(const char* end_name, const char* begin_name) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_endbegin_event(&g_lop_inst, end_name, begin_name);
-    }
+    if (g_lop_inst.enabled) _asm_emit_endbegin_event(&g_lop_inst, end_name, begin_name);
     compiler_barrier();
 }
 
 void emit_immediate_event(const char* name) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_immediate_event(&g_lop_inst, name);
-    }
+    if (g_lop_inst.enabled) _asm_emit_immediate_event(&g_lop_inst, name);
     compiler_barrier();
 }
 
 void emit_begin_meta_event(const char* name, uint64_t metadata) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_begin_meta_event(&g_lop_inst, name, metadata);
-    }
+    if (g_lop_inst.enabled) _asm_emit_begin_meta_event(&g_lop_inst, name, metadata);
     compiler_barrier();
 }
 
 void emit_end_meta_event(const char* name, uint64_t metadata) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_end_meta_event(&g_lop_inst, name, metadata);
-    }
+    if (g_lop_inst.enabled) _asm_emit_end_meta_event(&g_lop_inst, name, metadata);
     compiler_barrier();
 }
 
 void emit_immediate_meta_event(const char* name, uint64_t metadata) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_immediate_meta_event(&g_lop_inst, name, metadata);
-    }
+    if (g_lop_inst.enabled) _asm_emit_immediate_meta_event(&g_lop_inst, name, metadata);
     compiler_barrier();
 }
 
 void emit_counter_event(const char* name, uint64_t count) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_counter_event(&g_lop_inst, name, count);
-    }
+    if (g_lop_inst.enabled) _asm_emit_counter_event(&g_lop_inst, name, count);
     compiler_barrier();
 }
 
 void emit_flow_start_event(const char* name, uint64_t flow_id) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_flow_start_event(&g_lop_inst, name, flow_id);
-    }
+    if (g_lop_inst.enabled) _asm_emit_flow_start_event(&g_lop_inst, name, flow_id);
     compiler_barrier();
 }
 
 void emit_flow_finish_event(const char* name, uint64_t flow_id) {
     compiler_barrier();
-    if (g_lop_inst.enabled) {
-        _asm_emit_flow_finish_event(&g_lop_inst, name, flow_id);
-    }
+    if (g_lop_inst.enabled) _asm_emit_flow_finish_event(&g_lop_inst, name, flow_id);
     compiler_barrier();
 }
  

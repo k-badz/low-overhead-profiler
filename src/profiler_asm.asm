@@ -55,6 +55,13 @@ PUBLIC _asm_emit_flow_start_event
 PUBLIC _asm_emit_flow_finish_event
 
 EXTERN allocate_custom_tls : PROC 
+EXTERN exhaustion_handler : PROC 
+
+COMMENT @ To enable "safer" mode, set LOP_SAFER to 1 and make sure
+ that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
+@
+LOP_SAFER equ 0
+LOP_BUFFER_SIZE equ 0400000h
 
 CALL_BEGIN       equ 0
 CALL_END         equ 1
@@ -67,16 +74,16 @@ FLOW_FINISH      equ 6
 Event STRUCT
     timestamp      dq ?
     event_name     dq ?
-    thread_id      dq ?
     metadata       dq ?
     event_type     dd ?
     padding        dd ? ; Instead of this you could just set /Zp16 in MASM settings to match C++ struct packing
 Event ENDS
 
 EventBuffer STRUCT
-    next_event  dq ?
-    events      dq ?
-    thread_id   dq ?
+    next_event    dq ?
+    events        dq ?
+    events_backup dq ?
+    thread_id     dq ?
 EventBuffer ENDS
 
 MacroTLSCheck MACRO
@@ -104,6 +111,22 @@ _allocate_custom_tls_and_continue:
     pop r8
     mov qword ptr [rax], r11
     jmp _custom_tls_ready
+ENDM
+
+MacroExhaustionCheck MACRO
+    mov   r9, [r11].EventBuffer.next_event
+    sub   r9, [r11].EventBuffer.events
+    cmp   r9, LOP_BUFFER_SIZE * SIZEOF Event
+    jnb   _handle_fallback
+ENDM
+
+MacroExhaustionFallback MACRO
+_handle_fallback:
+    mov rcx, r11
+    sub rsp, 40
+    call exhaustion_handler
+    add rsp, 40
+    ret
 ENDM
 
 .code
@@ -137,6 +160,9 @@ _asm_get_tid ENDP
 ALIGN 16
 _asm_emit_begin_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
     
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, SIZEOF Event
@@ -149,11 +175,17 @@ _asm_emit_begin_event PROC, profiler_instance: QWORD, event_name: QWORD
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_begin_event ENDP
 
 ALIGN 16
 _asm_emit_end_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
 
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, SIZEOF Event
@@ -166,12 +198,18 @@ _asm_emit_end_event PROC, profiler_instance: QWORD, event_name: QWORD
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_end_event ENDP
 
 ALIGN 16
 _asm_emit_endbegin_event PROC, profiler_instance: QWORD, end_name: QWORD, begin_name: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, 2 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
@@ -188,12 +226,18 @@ _asm_emit_endbegin_event PROC, profiler_instance: QWORD, end_name: QWORD, begin_
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_endbegin_event ENDP
 
 ALIGN 16
 _asm_emit_immediate_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, 2 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
@@ -210,12 +254,18 @@ _asm_emit_immediate_event PROC, profiler_instance: QWORD, event_name: QWORD
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_immediate_event ENDP
 
 ALIGN 16
 _asm_emit_begin_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
@@ -228,11 +278,17 @@ _asm_emit_begin_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, me
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_begin_meta_event ENDP
 
 ALIGN 16
 _asm_emit_end_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
     MacroTLSCheck
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
 
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, SIZEOF Event
@@ -246,12 +302,18 @@ _asm_emit_end_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, meta
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_end_meta_event ENDP
 
 ALIGN 16
 _asm_emit_counter_event PROC, profiler_instance: QWORD, event_name: QWORD, count: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
@@ -264,12 +326,18 @@ _asm_emit_counter_event PROC, profiler_instance: QWORD, event_name: QWORD, count
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_counter_event ENDP
 
 ALIGN 16
 _asm_emit_immediate_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, 2 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
@@ -288,12 +356,18 @@ _asm_emit_immediate_meta_event PROC, profiler_instance: QWORD, event_name: QWORD
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_immediate_meta_event ENDP
 
 ALIGN 16
 _asm_emit_flow_start_event PROC, profiler_instance: QWORD, event_name: QWORD, flow_id: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, 3 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
@@ -316,12 +390,18 @@ _asm_emit_flow_start_event PROC, profiler_instance: QWORD, event_name: QWORD, fl
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_flow_start_event ENDP
 
 ALIGN 16
 _asm_emit_flow_finish_event PROC, profiler_instance: QWORD, event_name: QWORD, flow_id: QWORD
     MacroTLSCheck
-    
+IF LOP_SAFER
+    MacroExhaustionCheck
+ENDIF
+
     mov   r9, [r11].EventBuffer.next_event
     add  [r11].EventBuffer.next_event, 3 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
@@ -344,6 +424,9 @@ _asm_emit_flow_finish_event PROC, profiler_instance: QWORD, event_name: QWORD, f
     ret
 
     MacroTLSAllocate
+IF LOP_SAFER
+    MacroExhaustionFallback
+ENDIF
 _asm_emit_flow_finish_event ENDP
 
 OPTION PROLOGUE:PrologueDef

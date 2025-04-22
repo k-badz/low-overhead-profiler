@@ -42,6 +42,21 @@
 
 #include <stdint.h>
 
+// You can set this to "true" to enable what is called "safer" mode.
+// This mode will attempt to check for buffer exhaustion in the assembly and will try to
+// recover from such situation and minimize the number of events lost during this recovery.
+// This mode is highly experimental and might not be tested enough.
+// Side effects:
+// - double memory consumption due to kind of double buffering for thread buffers
+// - during recovery process some events might be lost
+// - tracing overhead might be increased by around 1 nanosecond / event
+// - the asynchronous flushing of events to disk might create many threads if you continue to
+//   emit events faster than they are flushed for long time
+// To enable, set this to true, and also find macros with same name
+// in the profiler_asm.cpp (Linux) or profiler_asm.asm (Windows) and also set them to true or 1.
+// You will find appropriate comment near them in their respective files.
+#define LOP_SAFER false
+
 namespace LOP {
 
 // Self-explanatory, I guess.

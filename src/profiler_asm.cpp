@@ -42,6 +42,11 @@
 #include <unistd.h>
 #include <stddef.h>
 
+// To enable "safer" mode, set LOP_SAFER to true and make sure
+// that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
+#define LOP_SAFER false
+#define LOP_BUFFER_SIZE 0x400000LLU
+
 struct CustomTLS;
 struct ProfilerEngine;
 
@@ -58,7 +63,6 @@ enum event_type : uint32_t {
 struct Event {
     uint64_t timestamp;
     const char* name;
-    uint64_t thread_id;
     uint64_t metadata;
     event_type type;
 };
@@ -70,10 +74,32 @@ struct EventBuffer {
 };
 
 extern CustomTLS* allocate_custom_tls();
+extern void exhaustion_handler(EventBuffer*);
 
 #define CONCAT(A, B) A##B
 #define TOSTRING(s) _TOSTRING(s)
 #define _TOSTRING(s) #s
+
+#if LOP_SAFER
+
+#define MacroExhaustionCheck(label_prefix)                                          \
+    "movq %c0(%%r11), %%r9\n\t"                                                     \
+    "sub  %c1(%%r11), %%r9\n\t"                                                     \
+    "cmp  %2, %%r9\n\t"                                                             \
+    "jz " TOSTRING(CONCAT(label_prefix,_handle_fallback)) "\n\t"
+
+#define MacroExhaustionFallback(label_prefix)                                       \
+TOSTRING(CONCAT(label_prefix,_handle_fallback)) ":\n\t"                             \
+    "movq %%r11, %%rdi\n\t"                                                         \
+    "sub  $40, %%rsp\n\t"                                                           \
+    "call exhaustion_handler\n\t"                                                   \
+    "add  $40, %%rsp\n\t"                                                           \
+    "ret\n\t"
+
+#else
+#define MacroExhaustionCheck ""
+#define MacroExhaustionFallback ""
+#endif
 
 #define MacroTLSCheck(label_prefix)                                                 \
     "movq %%fs:0x10, %%r9\n\t"                                                      \
@@ -118,224 +144,249 @@ extern "C" __attribute__((naked)) uint64_t _asm_get_tid() {
 extern "C" __attribute__((naked)) void _asm_emit_begin_event(ProfilerEngine*, const char*) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_begin_event)
+        MacroExhaustionCheck(_asm_emit_begin_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1, %c0(%%r11)\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
+        "addq %3, %c0(%%r11)\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_begin_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_BEGIN), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)) :
+        MacroExhaustionFallback(_asm_emit_begin_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_end_event(ProfilerEngine*, const char*) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_end_event)
+        MacroExhaustionCheck(_asm_emit_end_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1, %c0(%%r11)\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
+        "addq %3, %c0(%%r11)\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_end_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_END), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)) :
+        MacroExhaustionFallback(_asm_emit_end_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_END), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_endbegin_event(ProfilerEngine*, const char*, const char*) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_endbegin_event)
+        MacroExhaustionCheck(_asm_emit_endbegin_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1*2, %c0(%%r11)\n\t"
-        "lea %c1(%%r9), %%r10\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rdx, %c2(%%r10)\n\t"
-        "movq %6, %c4(%%r10)\n\t"
+        "addq %3*2, %c0(%%r11)\n\t"
+        "lea %c3(%%r9), %%r10\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c4(%%r10)\n\t"
+        "movq %8, %c6(%%r10)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "addq $1, %%rax\n\t"
-        "movq %%rax, %c5(%%r10)\n\t"
+        "movq %%rax, %c7(%%r10)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_endbegin_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_END), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)), "i" (CALL_BEGIN) :
+        MacroExhaustionFallback(_asm_emit_endbegin_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_END), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
+            "i" (CALL_BEGIN) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_immediate_event(ProfilerEngine*, const char*) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_immediate_event)
+        MacroExhaustionCheck(_asm_emit_immediate_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1*2, %c0(%%r11)\n\t"
-        "lea %c1(%%r9), %%r10\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rsi, %c2(%%r10)\n\t"
-        "movq %6, %c4(%%r10)\n\t"
+        "addq %3*2, %c0(%%r11)\n\t"
+        "lea %c3(%%r9), %%r10\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rsi, %c4(%%r10)\n\t"
+        "movq %8, %c6(%%r10)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "addq $10, %%rax\n\t"
-        "movq %%rax, %c5(%%r10)\n\t"
+        "movq %%rax, %c7(%%r10)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_immediate_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_END), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)), "i" (CALL_BEGIN) :
+        MacroExhaustionFallback(_asm_emit_immediate_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_END), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
+            "i" (CALL_BEGIN) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_begin_meta_event(ProfilerEngine*, const char*, uint64_t) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_begin_meta_event)
+        MacroExhaustionCheck(_asm_emit_begin_meta_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1, %c0(%%r11)\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rdx, %c5(%%r9)\n\t"
+        "addq %3, %c0(%%r11)\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c7(%%r9)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c6(%%r9)\n\t"
+        "movq %%rax, %c8(%%r9)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_begin_meta_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_BEGIN_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, metadata)), "i" (offsetof(Event, timestamp)) :
+        MacroExhaustionFallback(_asm_emit_begin_meta_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, metadata)),
+            "i" (offsetof(Event, timestamp)) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_end_meta_event(ProfilerEngine*, const char*, uint64_t) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_end_meta_event)
+        MacroExhaustionCheck(_asm_emit_end_meta_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1, %c0(%%r11)\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rdx, %c5(%%r9)\n\t"
+        "addq %3, %c0(%%r11)\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c7(%%r9)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c6(%%r9)\n\t"
+        "movq %%rax, %c8(%%r9)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_end_meta_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_END_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, metadata)), "i" (offsetof(Event, timestamp)) :
+        MacroExhaustionFallback(_asm_emit_end_meta_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_END_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, metadata)),
+            "i" (offsetof(Event, timestamp)) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_counter_event(ProfilerEngine*, const char*, uint64_t) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_counter_event)
+        MacroExhaustionCheck(_asm_emit_counter_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1, %c0(%%r11)\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rdx, %c5(%%r9)\n\t"
+        "addq %3, %c0(%%r11)\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c7(%%r9)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c6(%%r9)\n\t"
+        "movq %%rax, %c8(%%r9)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_counter_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (COUNTER_INT), "i" (offsetof(Event, type)), "i" (offsetof(Event, metadata)), "i" (offsetof(Event, timestamp)) :
+        MacroExhaustionFallback(_asm_emit_counter_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (COUNTER_INT), "i" (offsetof(Event, type)), "i" (offsetof(Event, metadata)),
+            "i" (offsetof(Event, timestamp)) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_immediate_meta_event(ProfilerEngine*, const char*, uint64_t) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_immediate_meta_event)
+        MacroExhaustionCheck(_asm_emit_immediate_meta_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1*2, %c0(%%r11)\n\t"
-        "lea %c1(%%r9), %%r10\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rdx, %c7(%%r9)\n\t"
-        "movq %%rsi, %c2(%%r10)\n\t"
-        "movq %6, %c4(%%r10)\n\t"
-        "movq %%rdx, %c7(%%r10)\n\t"
+        "addq %3*2, %c0(%%r11)\n\t"
+        "lea %c3(%%r9), %%r10\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c9(%%r9)\n\t"
+        "movq %%rsi, %c4(%%r10)\n\t"
+        "movq %8, %c6(%%r10)\n\t"
+        "movq %%rdx, %c9(%%r10)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "addq $10, %%rax\n\t"
-        "movq %%rax, %c5(%%r10)\n\t"
+        "movq %%rax, %c7(%%r10)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_immediate_meta_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_END_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)), "i" (CALL_BEGIN_META),
-            "i" (offsetof(Event, metadata)) :
+        MacroExhaustionFallback(_asm_emit_immediate_meta_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_END_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
+            "i" (CALL_BEGIN_META), "i" (offsetof(Event, metadata)) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_flow_start_event(ProfilerEngine*, const char*, uint64_t) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_flow_start_event)
+        MacroExhaustionCheck(_asm_emit_flow_start_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1*3, %c0(%%r11)\n\t"
-        "lea %c1(%%r9), %%r10\n\t"
-        "lea %c1*2(%%r9), %%r11\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %%rdx, %c7(%%r9)\n\t"
-        "movq %6, %c4(%%r10)\n\t"
-        "movq %%rdx, %c7(%%r10)\n\t"
-        "movq %%rsi, %c2(%%r11)\n\t"
-        "movq %8, %c4(%%r11)\n\t"
+        "addq %3*3, %c0(%%r11)\n\t"
+        "lea %c3(%%r9), %%r10\n\t"
+        "lea %c3*2(%%r9), %%r11\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c9(%%r9)\n\t"
+        "movq %8, %c6(%%r10)\n\t"
+        "movq %%rdx, %c9(%%r10)\n\t"
+        "movq %%rsi, %c4(%%r11)\n\t"
+        "movq %10, %c6(%%r11)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "addq $5, %%rax\n\t"
-        "movq %%rax, %c5(%%r10)\n\t"
+        "movq %%rax, %c7(%%r10)\n\t"
         "addq $5, %%rax\n\t"
-        "movq %%rax, %c5(%%r11)\n\t"
+        "movq %%rax, %c7(%%r11)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_flow_start_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_BEGIN_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)), "i" (FLOW_START),
-            "i" (offsetof(Event, metadata)), "i" (CALL_END) :
+        MacroExhaustionFallback(_asm_emit_flow_start_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
+            "i" (FLOW_START), "i" (offsetof(Event, metadata)), "i" (CALL_END) :
     );
 }
 
 extern "C" __attribute__((naked)) void _asm_emit_flow_finish_event(ProfilerEngine*, const char*, uint64_t) {
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_flow_finish_event)
+        MacroExhaustionCheck(_asm_emit_flow_finish_event)
         "movq %c0(%%r11), %%r9\n\t"
-        "addq %1*3, %c0(%%r11)\n\t"
-        "lea %c1(%%r9), %%r10\n\t"
-        "lea %c1*2(%%r9), %%r11\n\t"
-        "movq %%rsi, %c2(%%r9)\n\t"
-        "movq %3, %c4(%%r9)\n\t"
-        "movq %6, %c4(%%r10)\n\t"
-        "movq %%rdx, %c7(%%r10)\n\t"
-        "movq %%rsi, %c2(%%r11)\n\t"
-        "movq %8, %c4(%%r11)\n\t"
-        "movq %%rdx, %c7(%%r11)\n\t"
+        "addq %3*3, %c0(%%r11)\n\t"
+        "lea %c3(%%r9), %%r10\n\t"
+        "lea %c3*2(%%r9), %%r11\n\t"
+        "movq %%rsi, %c4(%%r9)\n\t"
+        "movq %5, %c6(%%r9)\n\t"
+        "movq %8, %c6(%%r10)\n\t"
+        "movq %%rdx, %c9(%%r10)\n\t"
+        "movq %%rsi, %c4(%%r11)\n\t"
+        "movq %10, %c6(%%r11)\n\t"
+        "movq %%rdx, %c9(%%r11)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
-        "movq %%rax, %c5(%%r9)\n\t"
+        "movq %%rax, %c7(%%r9)\n\t"
         "addq $5, %%rax\n\t"
-        "movq %%rax, %c5(%%r10)\n\t"
+        "movq %%rax, %c7(%%r10)\n\t"
         "addq $5, %%rax\n\t"
-        "movq %%rax, %c5(%%r11)\n\t"
+        "movq %%rax, %c7(%%r11)\n\t"
         "ret\n\t"
         MacroTLSAllocate(_asm_emit_flow_finish_event)
-        : : "i" (offsetof(EventBuffer, next_event)), "i" (sizeof(Event)), "i" (offsetof(Event, name)),
-            "i" (CALL_BEGIN), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)), "i" (FLOW_FINISH),
-            "i" (offsetof(Event, metadata)), "i" (CALL_END_META) :
+        MacroExhaustionFallback(_asm_emit_flow_finish_event)
+        : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
+            "i" (FLOW_FINISH), "i" (offsetof(Event, metadata)), "i" (CALL_END_META) :
     );
 }
