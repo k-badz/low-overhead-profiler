@@ -9,7 +9,10 @@ It is ideal if you need to profile the execution of a system that has complicate
 This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool.
 
     UPDATE:  
-    As of version v0.2, there is additional mode of operation I named "safer" mode. It allows profiler to continue to run even if buffers were exhausted and it will flush each exhausted set of buffers to separate trace file. You can find details of usage, including limitations, in the profiler.h header file.
+    As of version v0.2, there is additional mode of operation I named "safer" mode. It allows profiler
+    to continue to run even if buffers were exhausted and it will flush each exhausted set of buffers
+    to separate trace file. You can find details of usage, including limitations, in the profiler.h
+    header file.
 
 For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 
