@@ -519,6 +519,9 @@ void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buff
 
             --active_exhaustion_count;
         }).detach();
+
+        // INFO: Feel free to add any additional callback logic here.
+        // ...
     }
 }
 
