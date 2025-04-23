@@ -6,7 +6,10 @@ It is very fast compared to other time-tracing mechanisms, but at the expense of
 
 It is ideal if you need to profile the execution of a system that has complicated multithreaded structure and that exhibits various phenomena you would want to observe that would be missed by using sampling profilers like VTune or Perf or by using simple time recording mechanisms like std::chrono which induce multiple orders of magnitude more overhead than this project and could result in disturbing the system too much to observe those phenomena. So, if you have got some multithreaded performance related Heisenbug in your code, it could be really helpful.
 
-This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool. But, if performance is not >that< critical for you, you can change it freely to use things like ring buffers or whatever (initial code I made, actually did exactly that ^^).
+This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool.
+
+    UPDATE:  
+    As of version v0.2, there is additional mode of operation I named "safer" mode. It allows profiler to continue to run even if buffers were exhausted and it will flush each exhausted set of buffers to separate trace file. You can find details of usage, including limitations, in the profiler.h header file.
 
 For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 
@@ -17,7 +20,7 @@ For more details about motivation, design decisions, usage, overhead causes, lim
 3. Setup compilation appropriately to your build engine. You need to enable C++17 in your compiler for these files.
 4. Compile and enjoy.
 
-* For linux, running example is as simple as this:
+* For linux, compiling example is as simple as this:  
 `g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -Wno-format -g -std=c++17 -Iinclude -O2`
 
 * For windows, you need to add the files to solution, enable C++17, enable MASM compiler for asm file, add include directory path, and then build the solution.
@@ -30,15 +33,16 @@ For more details about motivation, design decisions, usage, overhead causes, lim
 4. Trace file will be generated automatically in your working directory.
 5. Open the trace in chrome://tracing or in https://ui.perfetto.dev/
 
+## You liked it? ^^
+
+<a href="https://buycoffee.to/kbadz"><img src=".github/buycoffeeto.png" width="200" alt="Buy me a coffee!"></a>  
+<a href="https://buymeacoffee.com/kbaggio"><img src=".github/buymeacoffee.png" width="200" alt="Buy me a coffee!"></a>
+
 ## Samples
 ![alt text](img/1.jpg)
 ![alt text](img/2.jpg)
 
-### You liked it? ^^
-[![buy me a coffee](https://www.buymeacoffee.com/assets/img/custom_images/yellow_img.png)](https://buymeacoffee.com/kbaggio)
-
 ## Notice
-
 This is profiler project I designed and implemented during my employment at Intel Corporation. 
 At some point it was open sourced under Apache License, Version 2.0 at:
 `https://github.com/HabanaAI/gaudi-pytorch-bridge/blob/v1.20.0/pytorch_helpers/low_overhead_profiler/`

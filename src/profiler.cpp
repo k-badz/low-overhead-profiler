@@ -138,7 +138,7 @@ struct ProfilerEngine {
     std::atomic<uint64_t> total_exhaustion_count = 0;
 
     std::list<EventBuffer*> event_buffers;
-    std::chrono::system_clock::time_point time_enable;\
+    std::chrono::system_clock::time_point time_enable;
 };
 
 inline ProfilerEngine g_lop_inst;
@@ -244,6 +244,12 @@ void ProfilerEngine::disable() {
 }
 
 void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferState>& buffers) {
+    // We REALLY want these two to happen together.
+    compiler_barrier();
+    auto tsc_disable = _asm_fast_rdtsc();
+    auto time_disable = std::chrono::system_clock::now();
+    compiler_barrier();
+
     uint64_t events_counter = 0;
     for (const BufferState& buffer : buffers) {
         uint64_t events_in_buffer = buffer.next_event - buffer.events;
@@ -258,9 +264,6 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
     printf("TOTAL EVENTS: %llu\n", events_counter);
 
     auto pid = get_process_id();
-    auto tsc_disable = _asm_fast_rdtsc();
-    auto time_disable = std::chrono::system_clock::now();
-
     double unix_time_diff_ns = static_cast<double>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(time_disable.time_since_epoch()).count() -
         std::chrono::duration_cast<std::chrono::nanoseconds>(time_enable.time_since_epoch()).count()
