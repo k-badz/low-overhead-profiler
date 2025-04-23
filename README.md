@@ -44,8 +44,8 @@ For more details about motivation, design decisions, usage, overhead causes, lim
 
 ## Notice
 This is profiler project I designed and implemented during my employment at Intel Corporation. 
-At some point it was open sourced under Apache License, Version 2.0 at:
-`https://github.com/HabanaAI/gaudi-pytorch-bridge/blob/v1.20.0/pytorch_helpers/low_overhead_profiler/`
+At some point it was open sourced under Apache License, Version 2.0 at:  
+`https://github.com/HabanaAI/gaudi-pytorch-bridge/blob/v1.20.0/pytorch_helpers/low_overhead_profiler/`  
 (disclaimer: version linked above contains also contributions from other engineers and is very project-specific)
 
 As that code contains various Gaudi and Intel -specific parts which makes it hard for other projects to use out of the box, I decided to distill the original idea I had in mind when it was designed.
