@@ -517,6 +517,11 @@ void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buff
             ++new_backup_id;
         }
 
+#if !LOP_SAFER_LOSSLESS
+        // Swap is done, we can enable profiler again.
+        enabled = true;
+#endif
+
         // Generate special event on current thread so that we can track on the trace at what point of
         // UNIX time this specific trace started. It can be used to merge traces using postprocessing
         // because every trace will have either lop_enable or lop_engine_recovery event that has global
@@ -528,10 +533,6 @@ void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buff
 
         // Save current total_exhaustion_count as it might change after we unlock mutexes.
         volatile uint64_t total_exhaustion_count_copy = total_exhaustion_count.load();
-
-#if !LOP_SAFER_LOSSLESS
-        enabled = true;
-#endif
 
         // Now we can unlock the mutexes as events tables are fully corrected so we could freely enter this
         // function again from any another thread.
