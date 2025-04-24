@@ -355,8 +355,9 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
     // Find first event, timewise.
     uint64_t tsc_base = std::numeric_limits<uint64_t>::max();
     for (const BufferState& buffer : buffers) {
-        const auto& event = buffer.events[0];
-        if (event.timestamp < tsc_base) tsc_base = event.timestamp;
+        Event* event = buffer.events;
+        for (; event < buffer.next_event; ++event)
+            if (event->timestamp < tsc_base) tsc_base = event->timestamp;
     }
 
     if (unix_time_diff_ns > 1000000000.0) {
