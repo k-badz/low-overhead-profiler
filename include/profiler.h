@@ -44,10 +44,9 @@
 
 // You can set this to "true" to enable what is called "safer" mode.
 // This mode will attempt to check for buffer exhaustion in the assembly and will try to
-// recover from such situation and minimize the number of events lost during this recovery.
+// recover from such situation by disabling the profiler, doing necessary operations, and re-enabling it.
 // This mode is highly experimental and might not be tested enough.
 // Side effects:
-// - double memory consumption due to kind of double buffering being used for thread buffers
 // - during recovery process some events will be lost
 // - tracing overhead might be increased by around 1 nanosecond / event
 // - the asynchronous flushing of events to disk might create many threads if you continue to
@@ -56,6 +55,14 @@
 // in the profiler_asm.cpp (Linux) or profiler_asm.asm (Windows) and also set them to true or 1.
 // You will find appropriate comment near them in their respective files.
 #define LOP_SAFER false
+
+// This is additional variation of mode explained above. When you enable "safer" mode above, on
+// top of that you can also enable lossless mode which will not loose events during the recovery.
+// As above, it requires support both in cpp and asm files so change both.
+// Side effects:
+// - much lower performance (like 16ns/event), because we are not stopping the profiler in that
+//   case, we need to do interlocked increments to the event buffers (due to hot swap)
+#define LOP_SAFER_LOSSLESS false
 
 namespace LOP {
 

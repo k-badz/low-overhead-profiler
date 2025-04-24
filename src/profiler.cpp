@@ -90,7 +90,6 @@ struct EventBuffer {
     Event* next_event; // Must be first field!!! For simplicty, because its accessed
                        // in critical part of asm and I don't want extra offsets there.
     Event* events;
-    Event* events_backup;
     uint64_t thread_id = 0;
 
     EventBuffer();
@@ -453,13 +452,19 @@ void ProfilerEngine::remove_event_buffer(EventBuffer* event_buffer) {
 
 void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buffer) {
     // Allow only one thread to perform exhaustion handling.
+#if LOP_SAFER_LOSSLESS
+    exhaustion_mutex.lock();
+#else
     if (exhaustion_mutex.try_lock())
+#endif
     {
         control_mutex.lock();
         buffers_mutex.lock();
-        // Now we are fully locked. Double-check if someone else
-        // didn't cleanup the buffer already.
-        if (signalling_event_buffer->events_backup - signalling_event_buffer->events < LOP_BUFFER_SIZE) {
+        // Now we are fully locked. 
+        // 1. Double-check if someone else didn't cleanup the buffer already.
+        // 2. Double check if that signal wasn't caused by hot swap as we can ignore those.
+        if (signalling_event_buffer->next_event - signalling_event_buffer->events < LOP_BUFFER_SIZE ||
+            signalling_event_buffer->next_event < signalling_event_buffer->events) {
             buffers_mutex.unlock();
             control_mutex.unlock();
             exhaustion_mutex.unlock();
@@ -469,9 +474,27 @@ void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buff
         ++active_exhaustion_count;
         ++total_exhaustion_count;
 
+#if !LOP_SAFER_LOSSLESS
+        // Disable the profiler so we can (almost) safely replace the buffers.
+        enabled = false;
+
+        // Now we need to delay the swap for long enough so that threads emitting
+        // events right now can exit the emission procedures. New buffers allocation will
+        // be perfect for that.
+        compiler_barrier();
+#endif
+        std::vector<Event*> new_backups;
+        new_backups.reserve(event_buffers.size());
+        for (auto& event_buffer : event_buffers)
+        {
+            new_backups.push_back(new Event[LOP_BUFFER_SIZE]);
+        }
+
+        compiler_barrier();
+
         std::vector<BufferState> exhausted_buffers;
         exhausted_buffers.reserve(event_buffers.size());
-
+        uint64_t new_backup_id = 0;
         for (auto& event_buffer : event_buffers)
         {
             BufferState exhausted_buffer;
@@ -484,18 +507,31 @@ void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buff
             // This hot swap might cause issues because we could get false negative exhaustion checks.
             // But thanks to compiler barrier, in worst case it will put such event in new table anyway...
             // ... which is good, actually.
-            event_buffer->next_event = event_buffer->events_backup;
+            const auto& new_backup = new_backups[new_backup_id];
+           
+            event_buffer->next_event = new_backup;
             compiler_barrier();
-            event_buffer->events = event_buffer->events_backup;
+            event_buffer->events = new_backup;
+            compiler_barrier();
+
+            ++new_backup_id;
         }
 
-        // At this point profiler already works on new buffers. We have some time to allocate new backup.
-        // If profiler manages to exhaust one of its buffers at this point, all events will be dropped
-        // till we unlock the exhaustion_mutex.
-        for (auto& event_buffer : event_buffers)
-        {
-            event_buffer->events_backup = new Event[LOP_BUFFER_SIZE];
-        }
+        // Generate special event on current thread so that we can track on the trace at what point of
+        // UNIX time this specific trace started. It can be used to merge traces using postprocessing
+        // because every trace will have either lop_enable or lop_engine_recovery event that has global
+        // UNIX timestamp gathered at that specific part of trace so it gives you a way to position the
+        // events globally.
+        emit_begin_event("lop_engine_recovery");
+        time_enable = std::chrono::system_clock::now();
+        emit_end_meta_event("lop_engine_recovery", std::chrono::duration_cast<std::chrono::nanoseconds>(time_enable.time_since_epoch()).count());
+
+        // Save current total_exhaustion_count as it might change after we unlock mutexes.
+        volatile uint64_t total_exhaustion_count_copy = total_exhaustion_count.load();
+
+#if !LOP_SAFER_LOSSLESS
+        enabled = true;
+#endif
 
         // Now we can unlock the mutexes as events tables are fully corrected so we could freely enter this
         // function again from any another thread.
@@ -505,10 +541,10 @@ void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buff
 
         // Now we can process all events in the saved exhausted buffers, but we will do so in other thread
         // to not delay user execution too much as this process is very slow.
-        std::thread([&, exhausted_buffers = std::move(exhausted_buffers)]() {
+        std::thread([&, total_exhaustion_count_copy, exhausted_buffers = std::move(exhausted_buffers)]() {
             // Save exhausted buffers to the disk.
-            std::string suffix = "exh_" + std::to_string(total_exhaustion_count.load());
-            printf("saving to disk, exhaustion # %llu\n", total_exhaustion_count.load());
+            std::string suffix = "exh_" + std::to_string(total_exhaustion_count_copy);
+            printf("saving to disk, exhaustion # %llu\n", total_exhaustion_count_copy);
             flush_buffers(suffix.c_str(), exhausted_buffers);
 
             // Cleanup buffers.
@@ -529,12 +565,6 @@ EventBuffer::EventBuffer() {
     thread_id = _asm_get_tid();
     events = new Event[LOP_BUFFER_SIZE];
 
-#if LOP_SAFER
-    events_backup = new Event[LOP_BUFFER_SIZE];
-#else
-    events_backup = nullptr;
-#endif
-
     next_event = events;
     if (events) {
         g_lop_inst.add_event_buffer(this);
@@ -550,11 +580,6 @@ EventBuffer::~EventBuffer() {
     if (events) {
         delete[] events;
         events = nullptr;
-    }
-
-    if (events_backup) {
-        delete[] events_backup;
-        events_backup = nullptr;
     }
 
     thread_id = -1;

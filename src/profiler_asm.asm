@@ -61,6 +61,7 @@ COMMENT @ To enable "safer" mode, set LOP_SAFER to 1 and make sure
  that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
 @
 LOP_SAFER equ 0
+LOP_SAFER_LOSSLESS equ 0
 LOP_BUFFER_SIZE equ 0400000h
 
 CALL_BEGIN       equ 0
@@ -82,7 +83,6 @@ Event ENDS
 EventBuffer STRUCT
     next_event    dq ?
     events        dq ?
-    events_backup dq ?
     thread_id     dq ?
 EventBuffer ENDS
 
@@ -113,25 +113,48 @@ _allocate_custom_tls_and_continue:
     jmp _custom_tls_ready
 ENDM
 
+INTERLOCKED_ADD equ add
+
 IF LOP_SAFER
+
+IF LOP_SAFER_LOSSLESS
+    INTERLOCKED_ADD equ lock add
+ENDIF
 
     MacroExhaustionCheck MACRO
         mov   r9, [r11].EventBuffer.next_event
         sub   r9, [r11].EventBuffer.events
         cmp   r9, LOP_BUFFER_SIZE * SIZEOF Event
         jnb   _handle_fallback
+    _fallback_handled:
     ENDM
 
     MacroExhaustionFallback MACRO
     _handle_fallback:
+IF LOP_SAFER_LOSSLESS
+        push r11
+        push r8
+        push rax
+        push rdx
+ENDIF
         mov rcx, r11
         sub rsp, 40
         call exhaustion_handler
         add rsp, 40
+IF LOP_SAFER_LOSSLESS
+        pop rdx
+        pop rax
+        pop r8
+        pop r11
+        jmp _fallback_handled
+ELSE
         ret
+ENDIF
     ENDM
 
 ELSE
+
+INTERLOCKED_ADD equ add
 
     MacroExhaustionCheck MACRO
     ENDM
@@ -175,7 +198,7 @@ _asm_emit_begin_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroExhaustionCheck
     
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_BEGIN
     rdtsc
@@ -194,7 +217,7 @@ _asm_emit_end_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END
     rdtsc
@@ -213,7 +236,7 @@ _asm_emit_endbegin_event PROC, profiler_instance: QWORD, end_name: QWORD, begin_
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, 2 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 2 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END
@@ -237,7 +260,7 @@ _asm_emit_immediate_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, 2 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 2 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END
@@ -261,7 +284,7 @@ _asm_emit_begin_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, me
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_BEGIN_META
     mov  [r9].Event.metadata, r8
@@ -281,7 +304,7 @@ _asm_emit_end_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, meta
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END_META
     mov  [r9].Event.metadata, r8
@@ -301,7 +324,7 @@ _asm_emit_counter_event PROC, profiler_instance: QWORD, event_name: QWORD, count
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, COUNTER_INT
     mov  [r9].Event.metadata, r8
@@ -321,7 +344,7 @@ _asm_emit_immediate_meta_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, 2 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 2 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END_META
@@ -347,7 +370,7 @@ _asm_emit_flow_start_event PROC, profiler_instance: QWORD, event_name: QWORD, fl
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, 3 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 3 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
     lea  r11, [r9 + 2 * SIZEOF Event]
     mov  [r9].Event.event_name, rdx
@@ -377,7 +400,7 @@ _asm_emit_flow_finish_event PROC, profiler_instance: QWORD, event_name: QWORD, f
     MacroExhaustionCheck
 
     mov   r9, [r11].EventBuffer.next_event
-    add  [r11].EventBuffer.next_event, 3 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 3 * SIZEOF Event
     lea  r10, [r9 + SIZEOF Event]
     lea  r11, [r9 + 2 * SIZEOF Event]
     mov  [r9].Event.event_name, rdx
