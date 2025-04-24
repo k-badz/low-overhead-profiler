@@ -81,12 +81,12 @@ extern void exhaustion_handler(EventBuffer*);
 #define TOSTRING(s) _TOSTRING(s)
 #define _TOSTRING(s) #s
 
-#define INTERLOCKED_ADD "addq"
+#define INTERLOCKED_ADD "xaddq"
 
 #if LOP_SAFER
 
 #if LOP_SAFER_LOSSLESS
-#define INTERLOCKED_ADD "lock addq"
+#define INTERLOCKED_ADD "lock xaddq"
 
 #define MacroExhaustionPreHandler                                                   \
     "push %%r11\n\t"                                                                \
@@ -176,8 +176,8 @@ extern "C" __attribute__((naked)) void _asm_emit_begin_event(ProfilerEngine*, co
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_begin_event)
         MacroExhaustionCheck(_asm_emit_begin_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3, %c0(%%r11)\n\t"
+        "movq %3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
         "rdtsc\n\t"
@@ -196,8 +196,8 @@ extern "C" __attribute__((naked)) void _asm_emit_end_event(ProfilerEngine*, cons
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_end_event)
         MacroExhaustionCheck(_asm_emit_end_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3, %c0(%%r11)\n\t"
+        "movq %3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
         "rdtsc\n\t"
@@ -216,8 +216,8 @@ extern "C" __attribute__((naked)) void _asm_emit_endbegin_event(ProfilerEngine*,
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_endbegin_event)
         MacroExhaustionCheck(_asm_emit_endbegin_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3*2, %c0(%%r11)\n\t"
+        "movq %3*2, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "lea %c3(%%r9), %%r10\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
@@ -242,8 +242,8 @@ extern "C" __attribute__((naked)) void _asm_emit_immediate_event(ProfilerEngine*
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_immediate_event)
         MacroExhaustionCheck(_asm_emit_immediate_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3*2, %c0(%%r11)\n\t"
+        "movq %3*2, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "lea %c3(%%r9), %%r10\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
@@ -268,8 +268,8 @@ extern "C" __attribute__((naked)) void _asm_emit_begin_meta_event(ProfilerEngine
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_begin_meta_event)
         MacroExhaustionCheck(_asm_emit_begin_meta_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3, %c0(%%r11)\n\t"
+        "movq %3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
         "movq %%rdx, %c7(%%r9)\n\t"
@@ -290,8 +290,8 @@ extern "C" __attribute__((naked)) void _asm_emit_end_meta_event(ProfilerEngine*,
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_end_meta_event)
         MacroExhaustionCheck(_asm_emit_end_meta_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3, %c0(%%r11)\n\t"
+        "movq %3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
         "movq %%rdx, %c7(%%r9)\n\t"
@@ -312,8 +312,8 @@ extern "C" __attribute__((naked)) void _asm_emit_counter_event(ProfilerEngine*, 
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_counter_event)
         MacroExhaustionCheck(_asm_emit_counter_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3, %c0(%%r11)\n\t"
+        "movq %3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
         "movq %%rdx, %c7(%%r9)\n\t"
@@ -334,8 +334,8 @@ extern "C" __attribute__((naked)) void _asm_emit_immediate_meta_event(ProfilerEn
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_immediate_meta_event)
         MacroExhaustionCheck(_asm_emit_immediate_meta_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3*2, %c0(%%r11)\n\t"
+        "movq %3*2, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "lea %c3(%%r9), %%r10\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
@@ -362,8 +362,8 @@ extern "C" __attribute__((naked)) void _asm_emit_flow_start_event(ProfilerEngine
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_flow_start_event)
         MacroExhaustionCheck(_asm_emit_flow_start_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3*3, %c0(%%r11)\n\t"
+        "movq %3*3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "lea %c3(%%r9), %%r10\n\t"
         "lea %c3*2(%%r9), %%r11\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
@@ -394,8 +394,8 @@ extern "C" __attribute__((naked)) void _asm_emit_flow_finish_event(ProfilerEngin
     __asm__ __volatile__(
         MacroTLSCheck(_asm_emit_flow_finish_event)
         MacroExhaustionCheck(_asm_emit_flow_finish_event)
-        "movq %c0(%%r11), %%r9\n\t"
-        INTERLOCKED_ADD " %3*3, %c0(%%r11)\n\t"
+        "movq %3*3, %%r9\n\t"
+        INTERLOCKED_ADD " %%r9, %c0(%%r11)\n\t"
         "lea %c3(%%r9), %%r10\n\t"
         "lea %c3*2(%%r9), %%r11\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"

@@ -113,12 +113,12 @@ _allocate_custom_tls_and_continue:
     jmp _custom_tls_ready
 ENDM
 
-INTERLOCKED_ADD equ add
+INTERLOCKED_ADD equ xadd
 
 IF LOP_SAFER
 
 IF LOP_SAFER_LOSSLESS
-    INTERLOCKED_ADD equ lock add
+    INTERLOCKED_ADD equ lock xadd
 ENDIF
 
     MacroExhaustionCheck MACRO
@@ -153,8 +153,6 @@ ENDIF
     ENDM
 
 ELSE
-
-INTERLOCKED_ADD equ add
 
     MacroExhaustionCheck MACRO
     ENDM
@@ -197,8 +195,8 @@ _asm_emit_begin_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
     
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
+    mov   r9, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_BEGIN
     rdtsc
@@ -216,8 +214,8 @@ _asm_emit_end_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
+    mov   r9, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END
     rdtsc
@@ -235,8 +233,8 @@ _asm_emit_endbegin_event PROC, profiler_instance: QWORD, end_name: QWORD, begin_
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 2 * SIZEOF Event
+    mov   r9, 2 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     lea  r10, [r9 + SIZEOF Event]
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END
@@ -259,8 +257,8 @@ _asm_emit_immediate_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 2 * SIZEOF Event
+    mov   r9, 2 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     lea  r10, [r9 + SIZEOF Event]
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END
@@ -283,8 +281,8 @@ _asm_emit_begin_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, me
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
+    mov   r9, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_BEGIN_META
     mov  [r9].Event.metadata, r8
@@ -303,8 +301,8 @@ _asm_emit_end_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, meta
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
+    mov   r9, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END_META
     mov  [r9].Event.metadata, r8
@@ -323,8 +321,8 @@ _asm_emit_counter_event PROC, profiler_instance: QWORD, event_name: QWORD, count
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, SIZEOF Event
+    mov   r9, SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, COUNTER_INT
     mov  [r9].Event.metadata, r8
@@ -343,8 +341,8 @@ _asm_emit_immediate_meta_event PROC, profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 2 * SIZEOF Event
+    mov   r9, 2 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     lea  r10, [r9 + SIZEOF Event]
     mov  [r9].Event.event_name, rdx
     mov  [r9].Event.event_type, CALL_END_META
@@ -369,8 +367,8 @@ _asm_emit_flow_start_event PROC, profiler_instance: QWORD, event_name: QWORD, fl
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 3 * SIZEOF Event
+    mov   r9, 3 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     lea  r10, [r9 + SIZEOF Event]
     lea  r11, [r9 + 2 * SIZEOF Event]
     mov  [r9].Event.event_name, rdx
@@ -399,8 +397,8 @@ _asm_emit_flow_finish_event PROC, profiler_instance: QWORD, event_name: QWORD, f
     MacroTLSCheck
     MacroExhaustionCheck
 
-    mov   r9, [r11].EventBuffer.next_event
-    INTERLOCKED_ADD  [r11].EventBuffer.next_event, 3 * SIZEOF Event
+    mov   r9, 3 * SIZEOF Event
+    INTERLOCKED_ADD  [r11].EventBuffer.next_event, r9
     lea  r10, [r9 + SIZEOF Event]
     lea  r11, [r9 + 2 * SIZEOF Event]
     mov  [r9].Event.event_name, rdx
