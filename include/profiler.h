@@ -47,6 +47,7 @@
 // recover from such situation by disabling the profiler, doing necessary operations, and re-enabling it.
 // This mode is highly experimental and might not be tested enough.
 // Side effects:
+// - double memory usage due to double buffering used in recovery process
 // - during recovery process some events will be lost
 // - tracing overhead might be increased by around 1 nanosecond / event
 // - the asynchronous flushing of events to disk might create many threads if you continue to
@@ -61,7 +62,7 @@
 // As above, it requires support both in cpp and asm files so change both.
 // Side effects:
 // - much lower performance (like 16ns/event), because we are not stopping the profiler in that
-//   case, we need to do interlocked increments to the event buffers (due to hot swap)
+//   case, we need to do interlocked increments to the event buffers (due to hot swap done).
 #define LOP_SAFER_LOSSLESS false
 
 namespace LOP {

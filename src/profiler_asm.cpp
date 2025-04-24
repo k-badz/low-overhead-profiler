@@ -71,6 +71,7 @@ struct Event {
 struct EventBuffer {
     Event* next_event;
     Event* events;
+    Event* events_backup;
     uint64_t thread_id;
 };
 

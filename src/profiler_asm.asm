@@ -83,6 +83,7 @@ Event ENDS
 EventBuffer STRUCT
     next_event    dq ?
     events        dq ?
+    events_backup dq ?
     thread_id     dq ?
 EventBuffer ENDS
 
