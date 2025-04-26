@@ -192,7 +192,7 @@ _asm_get_tid PROC
 _asm_get_tid ENDP
 
 ALIGN 16
-_asm_emit_begin_event PROC, profiler_instance: QWORD, event_name: QWORD
+_asm_emit_begin_event PROC ; profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
     
@@ -211,7 +211,7 @@ _asm_emit_begin_event PROC, profiler_instance: QWORD, event_name: QWORD
 _asm_emit_begin_event ENDP
 
 ALIGN 16
-_asm_emit_end_event PROC, profiler_instance: QWORD, event_name: QWORD
+_asm_emit_end_event PROC ; profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -230,7 +230,7 @@ _asm_emit_end_event PROC, profiler_instance: QWORD, event_name: QWORD
 _asm_emit_end_event ENDP
 
 ALIGN 16
-_asm_emit_endbegin_event PROC, profiler_instance: QWORD, end_name: QWORD, begin_name: QWORD
+_asm_emit_endbegin_event PROC ; profiler_instance: QWORD, end_name: QWORD, begin_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -254,7 +254,7 @@ _asm_emit_endbegin_event PROC, profiler_instance: QWORD, end_name: QWORD, begin_
 _asm_emit_endbegin_event ENDP
 
 ALIGN 16
-_asm_emit_immediate_event PROC, profiler_instance: QWORD, event_name: QWORD
+_asm_emit_immediate_event PROC ; profiler_instance: QWORD, event_name: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -278,7 +278,7 @@ _asm_emit_immediate_event PROC, profiler_instance: QWORD, event_name: QWORD
 _asm_emit_immediate_event ENDP
 
 ALIGN 16
-_asm_emit_begin_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
+_asm_emit_begin_meta_event PROC ; profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -298,7 +298,7 @@ _asm_emit_begin_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, me
 _asm_emit_begin_meta_event ENDP
 
 ALIGN 16
-_asm_emit_end_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
+_asm_emit_end_meta_event PROC ; profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -318,7 +318,7 @@ _asm_emit_end_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, meta
 _asm_emit_end_meta_event ENDP
 
 ALIGN 16
-_asm_emit_counter_event PROC, profiler_instance: QWORD, event_name: QWORD, count: QWORD
+_asm_emit_counter_event PROC ; profiler_instance: QWORD, event_name: QWORD, count: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -338,7 +338,7 @@ _asm_emit_counter_event PROC, profiler_instance: QWORD, event_name: QWORD, count
 _asm_emit_counter_event ENDP
 
 ALIGN 16
-_asm_emit_immediate_meta_event PROC, profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
+_asm_emit_immediate_meta_event PROC ; profiler_instance: QWORD, event_name: QWORD, metadata: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -364,7 +364,7 @@ _asm_emit_immediate_meta_event PROC, profiler_instance: QWORD, event_name: QWORD
 _asm_emit_immediate_meta_event ENDP
 
 ALIGN 16
-_asm_emit_flow_start_event PROC, profiler_instance: QWORD, event_name: QWORD, flow_id: QWORD
+_asm_emit_flow_start_event PROC ; profiler_instance: QWORD, event_name: QWORD, flow_id: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 
@@ -394,7 +394,7 @@ _asm_emit_flow_start_event PROC, profiler_instance: QWORD, event_name: QWORD, fl
 _asm_emit_flow_start_event ENDP
 
 ALIGN 16
-_asm_emit_flow_finish_event PROC, profiler_instance: QWORD, event_name: QWORD, flow_id: QWORD
+_asm_emit_flow_finish_event PROC ; profiler_instance: QWORD, event_name: QWORD, flow_id: QWORD
     MacroTLSCheck
     MacroExhaustionCheck
 

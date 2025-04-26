@@ -51,6 +51,7 @@
 #include <algorithm>
 #include <atomic>
 #include <queue>
+#include <string>
 
 #include "profiler.h"
 
@@ -369,6 +370,7 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
         printf("Long run detected. Will use frequency measured over time.\n");
         printf("Measured %f ticks per nanosecond\n", ticks_per_ns_ratio);
     }
+    bool first_event = true;
     std::map<uint64_t, Event*> COUNTER_events;
     for (const BufferState& buffer : buffers) {
         Event* event = buffer.events;
@@ -386,20 +388,20 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
             else if (event->type == CALL_BEGIN || event->type == CALL_END) {
                 const char* eventPh = (event->type == CALL_BEGIN) ? "B" : "E";
                 fprintf(file,
-                    "{"
+                    "%c{"
                     "\"tid\":\"%llx\","
                     "\"pid\":%u,"
                     "\"ts\":%llu.%03llu,"
                     "\"name\":\"%s\","
                     "\"ph\":\"%s\""
-                    "},\n",
-                    event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh);
+                    "}\n",
+                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh);
             }
             else if (event->type == CALL_BEGIN_META || event->type == CALL_END_META) {
                 const char* eventPh = (event->type == CALL_BEGIN_META) ? "B" : "E";
                 const char* metaName = (event->type == CALL_BEGIN_META) ? "b_meta" : "e_meta";
                 fprintf(file,
-                    "{"
+                    "%c{"
                     "\"tid\":\"%llx\","
                     "\"pid\":%u,"
                     "\"ts\":%llu.%03llu,"
@@ -408,13 +410,13 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
                     "\"args\":{"
                     "\"%s\":\"%llx\""
                     "}"
-                    "},\n",
-                    event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh, metaName, event->metadata);
+                    "}\n",
+                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh, metaName, event->metadata);
             }
             else if (event->type == FLOW_START || event->type == FLOW_FINISH) {
                 const char* eventPh = (event->type == FLOW_START) ? "s" : "f";
                 fprintf(file,
-                    "{"
+                    "%c{"
                     "\"tid\":\"%llx\","
                     "\"pid\":%u,"
                     "\"ts\":%llu.%03llu,"
@@ -425,13 +427,15 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
                     "\"args\":{"
                     "\"flow_id\":\"%llx\""
                     "}"
-                    "},\n",
-                    event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, event->metadata, event->metadata);
+                    "}\n",
+                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, event->metadata, event->metadata);
             }
             else {
                 printf("Unknown event type. Bailing out.\n");
                 return;
             }
+
+            first_event = false;
         }
     }
 
@@ -439,7 +443,7 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
         auto tsc_diff = timestamp - tsc_base;
         auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
         fprintf(file,
-            "{"
+            "%c{"
             "\"pid\": %u,"
             "\"ts\":%llu.%03llu,"
             "\"name\":\"%s\","
@@ -447,11 +451,13 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
             "\"args\":{"
             "\"val\":%llu"
             "}"
-            "},\n",
-            pid, time_ns / 1000, time_ns % 1000, event->name, event->metadata);
+            "}\n",
+            first_event ? ' ' : ',', pid, time_ns / 1000, time_ns % 1000, event->name, event->metadata);
+
+        first_event = false;
     }
 
-    fprintf(file,"{}]}");
+    fprintf(file,"]}");
     fclose(file);
 }
 
