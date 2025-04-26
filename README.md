@@ -24,7 +24,7 @@ For more details about motivation, design decisions, usage, overhead causes, lim
 4. Compile and enjoy.
 
 * For linux, compiling example is as simple as this:  
-`g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -Wno-format -g -std=c++17 -Iinclude -O2`
+`g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -std=c++17 -Iinclude -O2`
 
 * For windows, you need to add the files to solution, enable C++17, enable MASM compiler for asm file, add include directory path, and then build the solution.
 

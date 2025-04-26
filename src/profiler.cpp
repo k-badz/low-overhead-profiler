@@ -52,11 +52,12 @@
 #include <atomic>
 #include <queue>
 #include <string>
+#include <inttypes.h>
 
 #include "profiler.h"
 
 #define CUSTOM_TLS_SIZE 0x10000
-#define LOP_BUFFER_SIZE 0x400000LLU
+#define LOP_BUFFER_SIZE 0x400000U
 
 #if defined(_WIN32) || defined(_WIN64)
 # define compiler_barrier() _ReadWriteBarrier()
@@ -301,7 +302,7 @@ void ProfilerEngine::scheduler_loop()
         std::thread([exhaustion_count, buffers = std::move(buffers)]() {
             // Save exhausted buffers to the disk.
             std::string suffix = "exh_" + std::to_string(exhaustion_count);
-            printf("saving to disk, exhaustion # %llu\n", exhaustion_count);
+            printf("saving to disk, exhaustion # %" PRIu64 "\n", exhaustion_count);
             g_lop_inst.flush_buffers(suffix.c_str(), buffers);
 
             // Cleanup buffers.
@@ -325,7 +326,7 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
     uint64_t events_counter = 0;
     for (const BufferState& buffer : buffers) {
         uint64_t events_in_buffer = buffer.next_event - buffer.events;
-        printf("Got %llu/%llu (%llu%%) events in buffer of thread: %llx\n",
+        printf("Got %" PRIu64 "/%" PRIu32 " (%" PRIu64 "%%) events in buffer of thread: %" PRIx64 "\n",
             events_in_buffer,
             LOP_BUFFER_SIZE,
             events_in_buffer * 100 / LOP_BUFFER_SIZE,
@@ -333,7 +334,7 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
         events_counter += events_in_buffer;
     }
 
-    printf("TOTAL EVENTS: %llu\n", events_counter);
+    printf("TOTAL EVENTS: %" PRIu64 "\n", events_counter);
 
     auto pid = get_process_id();
     double unix_time_diff_ns = static_cast<double>(
@@ -342,8 +343,8 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
         );
 
     char name[200];
-    if (suffix) snprintf(name, 200, "events_pid%u_ts%llu_%s.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000), suffix);
-    else        snprintf(name, 200, "events_pid%u_ts%llu.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000));
+    if (suffix) snprintf(name, 200, "events_pid%u_ts%" PRIu64 "_%s.json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000), suffix);
+    else        snprintf(name, 200, "events_pid%u_ts%" PRIu64 ".json", pid, static_cast<uint64_t>(unix_time_diff_ns / 1000));
 
     std::string cleaned_name(name);
     std::replace(cleaned_name.begin(), cleaned_name.end(), '/', '_');
@@ -389,9 +390,9 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
                 const char* eventPh = (event->type == CALL_BEGIN) ? "B" : "E";
                 fprintf(file,
                     "%c{"
-                    "\"tid\":\"%llx\","
+                    "\"tid\":\"%" PRIx64 "\","
                     "\"pid\":%u,"
-                    "\"ts\":%llu.%03llu,"
+                    "\"ts\":%" PRIu64 ".%03" PRIu64 ","
                     "\"name\":\"%s\","
                     "\"ph\":\"%s\""
                     "}\n",
@@ -402,33 +403,34 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
                 const char* metaName = (event->type == CALL_BEGIN_META) ? "b_meta" : "e_meta";
                 fprintf(file,
                     "%c{"
-                    "\"tid\":\"%llx\","
+                    "\"tid\":\"%" PRIx64 "\","
                     "\"pid\":%u,"
-                    "\"ts\":%llu.%03llu,"
+                    "\"ts\":%" PRIu64 ".%03" PRIu64 ","
                     "\"name\":\"%s\","
                     "\"ph\":\"%s\","
                     "\"args\":{"
-                    "\"%s\":\"%llx\""
+                    "\"%s\":\"%" PRIx64 "\""
                     "}"
                     "}\n",
                     first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh, metaName, event->metadata);
             }
             else if (event->type == FLOW_START || event->type == FLOW_FINISH) {
                 const char* eventPh = (event->type == FLOW_START) ? "s" : "f";
+                uint32_t truncated_flow_id = (uint32_t)event->metadata; // perfetto supports only 32bit flow IDs.
                 fprintf(file,
                     "%c{"
-                    "\"tid\":\"%llx\","
+                    "\"tid\":\"%" PRIx64 "\","
                     "\"pid\":%u,"
-                    "\"ts\":%llu.%03llu,"
+                    "\"ts\":%" PRIu64 ".%03" PRIu64 ","
                     "\"name\":\"flow\","
                     "\"ph\":\"%s\","
                     "\"bp\":\"e\","
-                    "\"id\":%llu,"
+                    "\"id\":%" PRIu32 ","
                     "\"args\":{"
-                    "\"flow_id\":\"%llx\""
+                    "\"flow_id\":\"%" PRIx64 "\""
                     "}"
                     "}\n",
-                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, event->metadata, event->metadata);
+                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, truncated_flow_id, event->metadata);
             }
             else {
                 printf("Unknown event type. Bailing out.\n");
@@ -445,11 +447,11 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
         fprintf(file,
             "%c{"
             "\"pid\": %u,"
-            "\"ts\":%llu.%03llu,"
+            "\"ts\":%" PRIu64 ".%03" PRIu64 ","
             "\"name\":\"%s\","
             "\"ph\":\"C\","
             "\"args\":{"
-            "\"val\":%llu"
+            "\"val\":%" PRIu64 ""
             "}"
             "}\n",
             first_event ? ' ' : ',', pid, time_ns / 1000, time_ns % 1000, event->name, event->metadata);
@@ -643,7 +645,7 @@ EventBuffer::EventBuffer() {
 }
 
 EventBuffer::~EventBuffer() {
-    printf("EventBuffer::~EventBuffer at TID:%llu\n", thread_id); fflush(stdout);
+    printf("EventBuffer::~EventBuffer at TID:%" PRIu64 "\n", thread_id); fflush(stdout);
     g_lop_inst.remove_event_buffer(this);
     if (events) {
         delete[] events;

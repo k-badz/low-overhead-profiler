@@ -1,12 +1,13 @@
 import json
 import sys
 
-def unpack_meta_string(meta):
+def unpack_context_from_meta(meta):
     meta_val = int(meta, base=16)
-    context_id = (meta_val & 0x00000000FFFFFFFF)
-    control_id = (meta_val & 0xFFFFFFFF00000000) >> 32
+    flow_id =    (meta_val & 0x00000000FFFFFFFF)
+    context_id = (meta_val & 0x0000FFFF00000000) >> 32
+    control_id = (meta_val & 0xFFFF000000000000) >> 48
 
-    return control_id, context_id
+    return control_id, context_id, flow_id
 
 def main():
     if len(sys.argv) != 2:
@@ -21,12 +22,14 @@ def main():
         if 'args' in event:
             meta = False
             if 'b_meta' in event['args']:
-               meta = event['args']['b_meta']
+                meta = event['args']['b_meta']
             elif 'e_meta' in event['args']:
-               meta = event['args']['e_meta']
+                meta = event['args']['e_meta']
+            elif 'flow_id' in event['args']:
+                meta = event['args']['flow_id']
             
             if meta:
-                control_id, context_id = unpack_meta_string(meta)
+                control_id, context_id, _ = unpack_context_from_meta(meta)
 
                 if control_id == 77:
                     event['pid'] = context_id

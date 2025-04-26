@@ -90,6 +90,7 @@ void emit_immediate_event(const char* name);
 void emit_endbegin_event(const char* end_name, const char* begin_name);
 
 // Events allowing putting some additional metadata which will be present in the trace.
+// Check context_example.cpp/contextize.py for example usage.
 void emit_begin_meta_event(const char* name, uint64_t metadata);
 void emit_end_meta_event(const char* name, uint64_t metadata);
 void emit_immediate_meta_event(const char* name, uint64_t metadata);
@@ -97,6 +98,9 @@ void emit_counter_event(const char* name, uint64_t count);
 
 // Flow events. Good to connect between events managed by different threads
 // like monitoring of buffer liveness, async launch latencies, etc etc.
+// Important notice - Perfetto UI support only 32bit flow IDs but I'm
+// leaving whole 64bits here if you would like to put additional metadata here.
+// Check context_example.cpp/contextize.py for example usage.
 void emit_flow_start_event(const char* name, uint64_t flow_id);
 void emit_flow_finish_event(const char* name, uint64_t flow_id);
 

@@ -46,7 +46,7 @@
 // that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
 #define LOP_SAFER false
 #define LOP_SAFER_LOSSLESS false
-#define LOP_BUFFER_SIZE 0x400000LLU
+#define LOP_BUFFER_SIZE 0x400000U
 
 struct CustomTLS;
 struct ProfilerEngine;
@@ -374,6 +374,7 @@ extern "C" __attribute__((naked)) void _asm_emit_flow_start_event(ProfilerEngine
         "movq %%rdx, %c9(%%r10)\n\t"
         "movq %%rsi, %c4(%%r11)\n\t"
         "movq %10, %c6(%%r11)\n\t"
+        "movq %%rdx, %c9(%%r11)\n\t"
         "rdtsc\n\t"
         "shl $32, %%rdx\n\t"
         "or %%rdx, %%rax\n\t"
@@ -387,7 +388,7 @@ extern "C" __attribute__((naked)) void _asm_emit_flow_start_event(ProfilerEngine
         MacroExhaustionFallback(_asm_emit_flow_start_event)
         : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
             "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
-            "i" (FLOW_START), "i" (offsetof(Event, metadata)), "i" (CALL_END) :
+            "i" (FLOW_START), "i" (offsetof(Event, metadata)), "i" (CALL_END_META) :
     );
 }
 
@@ -401,6 +402,7 @@ extern "C" __attribute__((naked)) void _asm_emit_flow_finish_event(ProfilerEngin
         "lea %c3*2(%%r9), %%r11\n\t"
         "movq %%rsi, %c4(%%r9)\n\t"
         "movq %5, %c6(%%r9)\n\t"
+        "movq %%rdx, %c9(%%r9)\n\t"
         "movq %8, %c6(%%r10)\n\t"
         "movq %%rdx, %c9(%%r10)\n\t"
         "movq %%rsi, %c4(%%r11)\n\t"
@@ -418,7 +420,7 @@ extern "C" __attribute__((naked)) void _asm_emit_flow_finish_event(ProfilerEngin
         MacroTLSAllocate(_asm_emit_flow_finish_event)
         MacroExhaustionFallback(_asm_emit_flow_finish_event)
         : : "i" (offsetof(EventBuffer, next_event)), "i" (offsetof(EventBuffer, events)), "i" (LOP_BUFFER_SIZE * sizeof(Event)),
-            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
+            "i" (sizeof(Event)), "i" (offsetof(Event, name)), "i" (CALL_BEGIN_META), "i" (offsetof(Event, type)), "i" (offsetof(Event, timestamp)),
             "i" (FLOW_FINISH), "i" (offsetof(Event, metadata)), "i" (CALL_END_META) :
     );
 }

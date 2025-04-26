@@ -378,7 +378,8 @@ _asm_emit_flow_start_event PROC ; profiler_instance: QWORD, event_name: QWORD, f
     mov  [r10].Event.event_type, FLOW_START
     mov  [r10].Event.metadata,   r8
     mov  [r11].Event.event_name, rdx
-    mov  [r11].Event.event_type, CALL_END
+    mov  [r11].Event.event_type, CALL_END_META
+    mov  [r11].Event.metadata,   r8
     rdtsc
     shl  rdx, 32
     or   rax, rdx
@@ -403,7 +404,8 @@ _asm_emit_flow_finish_event PROC ; profiler_instance: QWORD, event_name: QWORD, 
     lea  r10, [r9 + SIZEOF Event]
     lea  r11, [r9 + 2 * SIZEOF Event]
     mov  [r9].Event.event_name, rdx
-    mov  [r9].Event.event_type, CALL_BEGIN
+    mov  [r9].Event.event_type, CALL_BEGIN_META
+    mov  [r9].Event.metadata,   r8
     mov  [r10].Event.event_type, FLOW_FINISH
     mov  [r10].Event.metadata,   r8
     mov  [r11].Event.event_name, rdx
