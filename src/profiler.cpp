@@ -172,7 +172,7 @@ extern "C" {
     void _asm_emit_flow_start_event(ProfilerEngine*, const char*, uint64_t);
     void _asm_emit_flow_finish_event(ProfilerEngine*, const char*, uint64_t);
 
-    CustomTLS* allocate_custom_tls() {
+    void* allocate_custom_tls() {
         return new CustomTLS;
     }
 

@@ -54,8 +54,8 @@ PUBLIC _asm_emit_immediate_meta_event
 PUBLIC _asm_emit_flow_start_event
 PUBLIC _asm_emit_flow_finish_event
 
-EXTERN allocate_custom_tls : PROC 
-EXTERN exhaustion_handler : PROC 
+EXTERN allocate_custom_tls_asmcallback : PROC 
+EXTERN exhaustion_handler_asmcallback : PROC 
 
 COMMENT @ To enable "safer" mode, set LOP_SAFER to 1 and make sure
  that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
@@ -104,7 +104,7 @@ _allocate_custom_tls_and_continue:
     push rax
     push rdx
     sub rsp, 32
-    call allocate_custom_tls
+    call allocate_custom_tls_asmcallback
     add rsp, 32
     mov r11, rax
     pop rdx
@@ -140,7 +140,7 @@ IF LOP_SAFER_LOSSLESS
 ENDIF
         mov rcx, r11
         sub rsp, 40
-        call exhaustion_handler
+        call exhaustion_handler_asmcallback
         add rsp, 40
 IF LOP_SAFER_LOSSLESS
         pop rdx

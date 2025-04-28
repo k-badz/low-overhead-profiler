@@ -75,8 +75,8 @@ struct EventBuffer {
     uint64_t thread_id;
 };
 
-extern CustomTLS* allocate_custom_tls();
-extern void exhaustion_handler(EventBuffer*);
+extern void* allocate_custom_tls_asmcallback();
+extern void exhaustion_handler_asmcallback(EventBuffer*);
 
 #define CONCAT(A, B) A##B
 #define TOSTRING(s) _TOSTRING(s)
@@ -122,7 +122,7 @@ TOSTRING(CONCAT(label_prefix,_handle_fallback)) ":\n\t"                         
     MacroExhaustionPreHandler                                                       \
     "movq %%r11, %%rdi\n\t"                                                         \
     "sub  $40, %%rsp\n\t"                                                           \
-    "call exhaustion_handler\n\t"                                                   \
+    "call exhaustion_handler_asmcallback\n\t"                                       \
     "add  $40, %%rsp\n\t"                                                           \
     MacroExhaustionPostHandler(label_prefix)
 
@@ -150,7 +150,7 @@ TOSTRING(CONCAT(label_prefix,_allocate_custom_tls_and_continue)) ":\n\t"  \
     "push %%rax\n\t"                                                      \
     "push %%rsi\n\t"                                                      \
     "sub  $32, %%rsp\n\t"                                                 \
-    "call allocate_custom_tls\n\t"                                        \
+    "call allocate_custom_tls_asmcallback\n\t"                            \
     "add  $32, %%rsp\n\t"                                                 \
     "mov  %%rax, %%r11\n\t"                                               \
     "pop  %%rsi\n\t"                                                      \
