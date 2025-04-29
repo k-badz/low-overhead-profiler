@@ -55,7 +55,7 @@
 // To enable, set this to true, and also find macros with same name
 // in the profiler_asm.cpp (Linux) or profiler_asm.asm (Windows) and also set them to true or 1.
 // You will find appropriate comment near them in their respective files.
-#define LOP_SAFER false
+#define LOP_SAFER true
 
 // This is additional variation of mode explained above. When you enable "safer" mode above, on
 // top of that you can also enable lossless mode which will not loose events during the recovery.
