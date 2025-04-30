@@ -16,6 +16,8 @@ This code should not be used in a product, it omits various security checks for 
 
 For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 
+Also, if you require something that would allow you to trace a binary instead, you can check my other [experimental tracer project](https://github.com/k-badz/binary-tracer) which builds on top of this repo.
+
 ## How to setup:
 
 1. Copy the include/profiler.h and src/profiler.cpp directories somewhere into your project
