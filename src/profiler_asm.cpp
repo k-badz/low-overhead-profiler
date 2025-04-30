@@ -44,7 +44,7 @@
 
 // To enable "safer" mode, set LOP_SAFER to true and make sure
 // that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
-#define LOP_SAFER false
+#define LOP_SAFER true
 #define LOP_SAFER_LOSSLESS false
 #define LOP_BUFFER_SIZE 0x400000U
 

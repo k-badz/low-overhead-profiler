@@ -60,7 +60,7 @@ EXTERN exhaustion_handler_asmcallback : PROC
 COMMENT @ To enable "safer" mode, set LOP_SAFER to 1 and make sure
  that LOP_BUFFER_SIZE is equal to the one set up in profiler.cpp
 @
-LOP_SAFER equ 0
+LOP_SAFER equ 1
 LOP_SAFER_LOSSLESS equ 0
 LOP_BUFFER_SIZE equ 0400000h
 
