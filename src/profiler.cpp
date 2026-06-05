@@ -66,6 +66,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 # define NOMINMAX
 # include <windows.h>
+# include <process.h> // _getpid
 # define compiler_barrier() _ReadWriteBarrier()
 # define get_process_id() _getpid()
 #else

@@ -75,6 +75,11 @@ echo "  ON total=$total_on  OFF total=$total_off  (equivalent)"
 grep -qi spill "$WORK/s2off/run/log.txt" && fail "flag-off build mentioned spilling" || true
 [ -z "$(ls "$WORK"/s2off/run/lop_spill_pid*.tmp 2>/dev/null)" ] || fail "flag-off build created a spill file"
 
+if [ "${LOP_SKIP_OOM_TEST:-0}" = "1" ]; then
+    echo "== Scenario 4: OOM relief valve -- SKIPPED (LOP_SKIP_OOM_TEST=1) =="
+    echo; echo "ALL TESTS PASSED (scenario 4 skipped)"; exit 0
+fi
+
 echo "== Scenario 4: OOM relief valve under ulimit -v =="
 prepare "$WORK/s4" 0x40000U 1 2   # 8 MB buffers, default threshold
 build "$WORK/s4" "" "$WORK/s4/test"

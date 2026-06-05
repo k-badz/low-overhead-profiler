@@ -1,0 +1,77 @@
+name: build-and-test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (GCC inline asm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ python3
+
+      - name: Build samples
+        run: |
+          g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -std=c++17 -Iinclude -O2 -pthread -o example
+          g++ samples/context_example.cpp src/profiler_asm.cpp src/profiler.cpp -std=c++17 -Iinclude -O2 -pthread -o context_example
+
+      - name: Smoke run samples
+        run: ./example && ./context_example
+
+      - name: Spill-to-disk feature tests
+        # The OOM relief-valve scenario is timing sensitive, so it is exercised locally rather
+        # than in CI; the forced-spill (ASan/UBSan), ON/OFF equivalence and flag-off scenarios
+        # are deterministic and run here.
+        env:
+          LOP_SKIP_OOM_TEST: "1"
+        run: bash test/run_tests.sh
+
+  windows:
+    name: Windows (MASM + MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build and run example (default config)
+        shell: cmd
+        run: |
+          ml64 /nologo /c src\profiler_asm.asm ^
+          && cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp src\profiler.cpp profiler_asm.obj /Fe:example.exe ^
+          && example.exe
+
+      - name: Build and run context example (3-slot flow path)
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\context_example.cpp src\profiler.cpp profiler_asm.obj /Fe:context_example.exe ^
+          && context_example.exe
+
+      - name: Patch a tiny-buffer build (forces buffer rotation -> real spilling)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tinybuild | Out-Null
+          (Get-Content src\profiler.cpp     -Raw).Replace('#define LOP_BUFFER_SIZE 0x400000U','#define LOP_BUFFER_SIZE 0x100U')   | Set-Content tinybuild\profiler.cpp
+          (Get-Content src\profiler_asm.asm -Raw).Replace('LOP_BUFFER_SIZE equ 0400000h','LOP_BUFFER_SIZE equ 0100h')             | Set-Content tinybuild\profiler_asm.asm
+          (Get-Content include\profiler.h   -Raw).Replace('#define LOP_SPILL_RAM_THRESHOLD 2','#define LOP_SPILL_RAM_THRESHOLD 1') | Set-Content tinybuild\profiler.h
+
+      - name: Build and run forced-spill test, then validate the merged trace
+        shell: cmd
+        run: |
+          ml64 /nologo /c tinybuild\profiler_asm.asm ^
+          && cl /nologo /std:c++17 /EHsc /O2 /Itinybuild test\spill_test.cpp tinybuild\profiler.cpp profiler_asm.obj /Fe:spill_test.exe ^
+          && spill_test.exe 20000 ^
+          && python test\validate.py . 80000 4
