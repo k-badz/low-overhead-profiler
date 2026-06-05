@@ -8,11 +8,14 @@ It is ideal if you need to profile the execution of a system that has complicate
 
 This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool.
 
-    UPDATE:  
-    As of version v0.2, there is additional mode of operation I named "safer" mode. It allows profiler
-    to continue to run even if buffers were exhausted and it will flush each exhausted set of buffers
-    to separate trace file. You can find details of usage, including limitations, in the profiler.h
-    header file.
+    UPDATE:
+    The profiler now uses per-thread double buffering (LOP_DOUBLE_BUFFER, on by default). When a
+    thread fills its event buffer it instantly swaps to a pre-allocated backup and keeps tracing,
+    while a background thread prepares the next backup. All filled buffers are kept and merged into
+    a single trace at flush time, so it no longer crashes on exhaustion and no events are lost. The
+    trade-off is memory: filled buffers are retained in RAM, so call profiler_flush() periodically
+    during very long sessions. Set LOP_DOUBLE_BUFFER to 0 to get the original zero-overhead unsafe
+    mode (no bounds check, can overflow). See the profiler.h header for details.
 
 For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 

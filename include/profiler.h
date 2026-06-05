@@ -42,28 +42,24 @@
 
 #include <stdint.h>
 
-// You can set this to "true" to enable what is called "safer" mode.
-// This mode will attempt to check for buffer exhaustion in the assembly and will try to
-// recover from such situation by disabling the profiler, doing necessary operations, and re-enabling it.
-// This mode is highly experimental and might not be tested enough.
-// Side effects:
-// - double memory usage due to double buffering used in recovery process
-// - during recovery process some events will be lost
-// - tracing overhead might be increased by around 1 nanosecond / event
-// - the asynchronous flushing of events to disk might create many threads if you continue to
-//   emit events faster than they are flushed for long time
-// To enable, set this to true, and also find macros with same name
-// in the profiler_asm.cpp (Linux) or profiler_asm.asm (Windows) and also set them to true or 1.
-// You will find appropriate comment near them in their respective files.
-#define LOP_SAFER false
-
-// This is additional variation of mode explained above. When you enable "safer" mode above, on
-// top of that you can also enable lossless mode which will not loose events during the recovery.
-// As above, it requires support both in cpp and asm files so change both.
-// Side effects:
-// - much lower performance (like 16ns/event), because we are not stopping the profiler in that
-//   case, we need to do interlocked increments to the event buffers (due to hot swap done).
-#define LOP_SAFER_LOSSLESS false
+// Per-thread double buffering. With this enabled (the default), the profiler will never
+// crash when a thread fills up its event buffer. Instead, the thread instantly swaps to a
+// pre-allocated backup buffer and keeps tracing, while a background thread allocates the
+// next backup. The filled buffer is kept in a linked list and all of them are merged into
+// a single trace file at flush time, so no events are lost.
+// How it works / things to keep in mind:
+// - the hot path gains a single (well-predicted) bounds check per event, which is
+//   essentially free compared to the rest of the emission.
+// - the swap happens on the very thread that depleted the buffer, so it needs no atomics,
+//   no global disable, and no draining - it is naturally lossless and cheap.
+// - filled buffers are retained in RAM until flush. Each buffer is large
+//   (LOP_BUFFER_SIZE * sizeof(Event), ~128 MB with the defaults), so memory grows with the
+//   amount of tracing. For long-running sessions, call profiler_flush() periodically.
+// Set this to 0 to get the original, truly zero-overhead unsafe mode: no bounds check at
+// all, but the buffer can overflow and crash if you trace for too long.
+// IMPORTANT: this macro must be kept in sync with the same macro in profiler_asm.cpp
+// (Linux) and profiler_asm.asm (Windows).
+#define LOP_DOUBLE_BUFFER 1
 
 namespace LOP {
 

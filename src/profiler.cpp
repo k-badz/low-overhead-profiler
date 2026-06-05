@@ -93,7 +93,10 @@ struct EventBuffer {
     Event* next_event; // Must be first field!!! For simplicty, because its accessed
                        // in critical part of asm and I don't want extra offsets there.
     Event* events;
-    Event* events_backup;
+    // Pre-allocated buffer the thread swaps to when "events" fills up. The owning thread
+    // consumes it (exchange to nullptr) and the scheduler thread refills it, so it is atomic.
+    // Never touched by the asm hot path, so this costs nothing there.
+    std::atomic<Event*> events_backup{nullptr};
     uint64_t thread_id = 0;
 
     EventBuffer();
@@ -117,7 +120,7 @@ struct ProfilerEngine {
 
     void add_event_buffer(EventBuffer* event_buffer);
     void remove_event_buffer(EventBuffer* event_buffer);
-    void handle_exhausted_buffers(EventBuffer* signalling_event_buffer);
+    void handle_depleted_buffer(EventBuffer* depleted_event_buffer);
 
     static void scheduler_loop();
 
@@ -137,16 +140,16 @@ struct ProfilerEngine {
     double ticks_per_ns_ratio;
 
     std::mutex buffers_mutex;
-    std::mutex exhaustion_mutex;
     std::mutex control_mutex;
-    std::atomic<uint64_t> active_exhaustion_count;
 
     bool scheduler_run;
     std::thread scheduler_thread;
-    std::queue<std::vector<BufferState>> scheduler_queue;
+    std::queue<EventBuffer*> scheduler_queue; // buffers that need a fresh backup allocated
     std::mutex scheduler_queue_mutex;
 
-    std::list<EventBuffer*> event_buffers;
+    std::list<EventBuffer*> event_buffers;     // live per-thread buffers
+    std::list<BufferState> filled_buffers;     // buffers swapped out after filling up, kept until flush
+    std::mutex filled_mutex;
     std::chrono::system_clock::time_point time_enable;
 };
 
@@ -176,8 +179,8 @@ extern "C" {
         return new CustomTLS;
     }
 
-    void exhaustion_handler(EventBuffer* signalling_event_buffer) {
-        g_lop_inst.handle_exhausted_buffers(signalling_event_buffer);
+    void exhaustion_handler(EventBuffer* depleted_event_buffer) {
+        g_lop_inst.handle_depleted_buffer(depleted_event_buffer);
     }
 };
 
@@ -199,10 +202,8 @@ ProfilerEngine::ProfilerEngine()
     tsc_enable(0),
     ticks_per_ns_ratio(0.0),
     buffers_mutex(),
-    exhaustion_mutex(),
     control_mutex(),
-    active_exhaustion_count(0),
-#if LOP_SAFER
+#if LOP_DOUBLE_BUFFER
     scheduler_run(true),
 #else
     scheduler_run(false),
@@ -211,6 +212,8 @@ ProfilerEngine::ProfilerEngine()
     scheduler_queue(),
     scheduler_queue_mutex(),
     event_buffers(),
+    filled_buffers(),
+    filled_mutex(),
     time_enable()
 {
     char* disable_string = std::getenv("LOP_DISABLE");
@@ -268,51 +271,34 @@ void ProfilerEngine::disable() {
 
 void ProfilerEngine::scheduler_loop()
 {
-    uint64_t exhaustion_count = 0;
     while (g_lop_inst.scheduler_run)
     {
-        if (g_lop_inst.scheduler_queue.empty())
+        // Pull one buffer that recently swapped to its backup and now needs a new one.
+        EventBuffer* event_buffer = nullptr;
         {
-            // Why 5 milliseconds? We want this thread to have negligible impact when waiting. But on
-            // the other hand, when we put a request in this queue, we have to generate new backup
-            // buffers before next exhaustion comes up, or we're screwed. Time between exhaustions
-            // won't be smaller than LOP_BUFFER_SIZE * 8ns which gives us 32ms for 4M events.
-            // It means 5 milliseconds delay between checks is well enough to catch any queue request
-            // and allocate it on time.
+            const std::lock_guard<std::mutex> lock(g_lop_inst.scheduler_queue_mutex);
+            if (!g_lop_inst.scheduler_queue.empty()) {
+                event_buffer = g_lop_inst.scheduler_queue.front();
+                g_lop_inst.scheduler_queue.pop();
+            }
+        }
+
+        if (!event_buffer)
+        {
+            // Nothing to do, stay negligible while idle. A thread cannot deplete a fresh
+            // buffer faster than LOP_BUFFER_SIZE * ~8ns (~33ms for the default size), so a
+            // 5ms poll is plenty to prepare the next backup in time. If a burst ever beats
+            // us to it, handle_depleted_buffer() falls back to a synchronous allocation.
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
 
-        ++exhaustion_count;
-
-        // Allocate new backups, as this is the time critical part.
-        for (auto& event_buffer : g_lop_inst.event_buffers) {
-            event_buffer->events_backup = new Event[LOP_BUFFER_SIZE];
+        // Prepare the next backup ahead of the next depletion. Only the scheduler ever stores
+        // a non-null backup (the owning thread only ever consumes it), so a plain check-then-
+        // store is race free, and we never allocate one we already have.
+        if (event_buffer->events_backup.load() == nullptr) {
+            event_buffer->events_backup.store(new Event[LOP_BUFFER_SIZE]);
         }
-
-        // Get buffers.
-        std::vector<BufferState> buffers;
-        {
-            const std::lock_guard<std::mutex> lock(g_lop_inst.scheduler_queue_mutex);
-            std::swap(buffers, g_lop_inst.scheduler_queue.front());
-            g_lop_inst.scheduler_queue.pop();
-        }
-
-        // Schedule thread to save buffers to disk.
-        std::thread([exhaustion_count, buffers = std::move(buffers)]() {
-            // Save exhausted buffers to the disk.
-            std::string suffix = "exh_" + std::to_string(exhaustion_count);
-            printf("saving to disk, exhaustion # %" PRIu64 "\n", exhaustion_count);
-            g_lop_inst.flush_buffers(suffix.c_str(), buffers);
-
-            // Cleanup buffers.
-            for (auto& event_buffer : buffers)
-            {
-                delete[] event_buffer.events;
-            }
-
-            --g_lop_inst.active_exhaustion_count;
-            }).detach();
     }
 }
 
@@ -466,6 +452,7 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
 void ProfilerEngine::flush(const char* suffix) {
     const std::lock_guard<std::mutex> control_lock(control_mutex);
     const std::lock_guard<std::mutex> buffer_lock(buffers_mutex);
+    const std::lock_guard<std::mutex> filled_lock(filled_mutex);
     printf("ProfilerEngine::flush at PID:%u\n", get_process_id());
     if (suffix) printf("Flushing for suffix: \"%s\"\n", suffix);
     fflush(stdout);
@@ -480,7 +467,13 @@ void ProfilerEngine::flush(const char* suffix) {
         return;
     }
 
+    // Gather everything for a single combined trace: the buffers that filled up and were
+    // swapped out during the run, plus what is left in the current live buffers.
     std::vector<BufferState> buffers;
+    buffers.reserve(filled_buffers.size() + event_buffers.size());
+    for (const BufferState& filled : filled_buffers) {
+        buffers.push_back(filled);
+    }
     for (auto& event_buffer : event_buffers)
     {
         BufferState buffer;
@@ -493,13 +486,13 @@ void ProfilerEngine::flush(const char* suffix) {
 
     flush_buffers(suffix, buffers);
 
+    // Free the retained filled buffers and reset the live ones for reuse.
+    for (const BufferState& filled : filled_buffers) {
+        delete[] filled.events;
+    }
+    filled_buffers.clear();
     for (EventBuffer* buffer : event_buffers) {
         buffer->next_event = buffer->events; // re-initialize current buffers
-    }
-
-    while (active_exhaustion_count) {
-        // User flush needs to wait for all internal exhaustions flushes to finish.
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     flushed = true;
@@ -534,96 +527,38 @@ void ProfilerEngine::remove_event_buffer(EventBuffer* event_buffer) {
     event_buffers.remove(event_buffer);
 }
 
-void ProfilerEngine::handle_exhausted_buffers(EventBuffer* signalling_event_buffer) {
-    // Allow only one thread to perform exhaustion handling.
-#if LOP_SAFER_LOSSLESS
-    exhaustion_mutex.lock();
-#else
-    if (exhaustion_mutex.try_lock())
-#endif
+void ProfilerEngine::handle_depleted_buffer(EventBuffer* depleted_event_buffer) {
+    // This runs on the very thread that filled its own buffer, called from the asm fallback.
+    // Because only this thread writes this buffer's "events"/"next_event", the swap needs no
+    // global disable, no draining and no atomics on those pointers - it is naturally lossless.
+
+    // Take the pre-allocated backup. If the scheduler hasn't managed to prepare one yet (a
+    // burst, or many threads depleting at once and serializing the scheduler), allocate one
+    // synchronously so we never crash - only this one unlucky event pays for it.
+    Event* fresh_buffer = depleted_event_buffer->events_backup.exchange(nullptr);
+    if (fresh_buffer == nullptr) {
+        fresh_buffer = new Event[LOP_BUFFER_SIZE];
+    }
+
+    // Retain the just-filled buffer so it gets parsed at flush. Ownership of the old "events"
+    // allocation moves into the filled list (it is freed in flush()).
     {
-        control_mutex.lock();
-        buffers_mutex.lock();
+        const std::lock_guard<std::mutex> lock(filled_mutex);
+        filled_buffers.push_back({ depleted_event_buffer->next_event,
+                                   depleted_event_buffer->events,
+                                   depleted_event_buffer->thread_id });
+    }
 
-        // Now we are fully locked. 
-        // Double-check if someone else didn't cleanup the buffer already.
-        if (signalling_event_buffer->next_event - signalling_event_buffer->events < LOP_BUFFER_SIZE) {
-            buffers_mutex.unlock();
-            control_mutex.unlock();
-            exhaustion_mutex.unlock();
-            return;
-        }
+    // Swap the fresh buffer in. The asm caller is paused mid-fallback and will reload
+    // next_event from memory when it retries, so the barrier is enough - no atomics needed.
+    depleted_event_buffer->events = fresh_buffer;
+    depleted_event_buffer->next_event = fresh_buffer;
+    compiler_barrier();
 
-        ++active_exhaustion_count;
-
-#if !LOP_SAFER_LOSSLESS
-        // Disable the profiler so we can (almost) safely replace the buffers.
-        enabled = false;
-
-        // Now we need to delay the swap for long enough so that threads emitting events
-        // right now can exit the emission procedures. Few microseconds is enough and
-        // we will get that by busy-calling RDTSC all over again because it have quite
-        // well defined execution time.
-        // This kinda workaround is needed because Windows usually cannot sleep for less
-        // than millisecond and that's definitely too much.
-        compiler_barrier();
-        for (uint64_t i = 0; i < 2000; i++) {_asm_fast_rdtsc();}
-        compiler_barrier();
-#endif
-
-        std::vector<BufferState> exhausted_buffers;
-        exhausted_buffers.reserve(event_buffers.size());
-        uint64_t new_backup_id = 0;
-        for (auto& event_buffer : event_buffers)
-        {
-            BufferState exhausted_buffer;
-            exhausted_buffer.events = event_buffer->events;
-            exhausted_buffer.next_event = event_buffer->next_event;
-            exhausted_buffer.thread_id = event_buffer->thread_id;
-
-            exhausted_buffers.push_back(exhausted_buffer);
-
-            // This hot swap might cause issues because we could get false negative exhaustion checks.
-            // But thanks to compiler barrier, in worst case it will put such event in new table anyway...
-            // ... which is good, actually.
-            event_buffer->next_event = event_buffer->events_backup;
-            compiler_barrier();
-            event_buffer->events = event_buffer->events_backup;
-        }
-
-#if !LOP_SAFER_LOSSLESS
-        // Swap is done, we can enable profiler again.
-        enabled = true;
-#endif
-
-        // Generate special event on current thread so that we can track on the trace at what point of
-        // UNIX time this specific trace started. It can be used to merge traces using postprocessing
-        // because every trace will have either lop_enable or lop_engine_recovery event that has global
-        // UNIX timestamp gathered at that specific part of trace so it gives you a way to position the
-        // events globally.
-        emit_begin_event("lop_engine_recovery");
-        time_enable = std::chrono::system_clock::now();
-        emit_end_meta_event("lop_engine_recovery", std::chrono::duration_cast<std::chrono::nanoseconds>(time_enable.time_since_epoch()).count());
-
-        // Now we can process all events in the saved exhausted buffers, but we will do so in other thread
-        // to not delay user execution too much as this process is very slow.
-        // We will also prepare new backup buffers there.
-        // We are using queue to a dedicated thread scheduler because creating new thread directly here
-        // can take even a millisecond(!) or so as my tests shown and we don't want to delay current user
-        // thread for that long.
-        {
-            const std::lock_guard<std::mutex> lock(scheduler_queue_mutex);
-            scheduler_queue.push(std::move(exhausted_buffers));
-        }
-
-        // Now we can unlock the mutexes as events tables are fully corrected so we could freely enter this
-        // function again from any another thread.
-        buffers_mutex.unlock();
-        control_mutex.unlock();
-        exhaustion_mutex.unlock();
-
-        // INFO: Feel free to add any additional callback logic here.
-        // ...
+    // Ask the scheduler to prepare the next backup ahead of the next depletion.
+    {
+        const std::lock_guard<std::mutex> lock(scheduler_queue_mutex);
+        scheduler_queue.push(depleted_event_buffer);
     }
 }
 
@@ -631,7 +566,7 @@ EventBuffer::EventBuffer() {
     thread_id = _asm_get_tid();
     events = new Event[LOP_BUFFER_SIZE];
 
-#if LOP_SAFER
+#if LOP_DOUBLE_BUFFER
     events_backup = new Event[LOP_BUFFER_SIZE];
 #endif
 
@@ -650,6 +585,11 @@ EventBuffer::~EventBuffer() {
     if (events) {
         delete[] events;
         events = nullptr;
+    }
+
+    Event* backup = events_backup.exchange(nullptr);
+    if (backup) {
+        delete[] backup;
     }
 
     thread_id = -1;
