@@ -52,18 +52,27 @@
 #include <atomic>
 #include <queue>
 #include <string>
+#include <condition_variable>
+#include <cstdio>
+#include <new>
 #include <inttypes.h>
 
 #include "profiler.h"
 
 #define CUSTOM_TLS_SIZE 0x10000
 #define LOP_BUFFER_SIZE 0x400000U
+#define LOP_SPILL_THROTTLE_MS 2 // gap the spiller leaves between segments to stay gentle on IO
 
 #if defined(_WIN32) || defined(_WIN64)
+# define NOMINMAX
+# include <windows.h>
 # define compiler_barrier() _ReadWriteBarrier()
 # define get_process_id() _getpid()
 #else
 #include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
 # define compiler_barrier() __asm__ __volatile__("" ::: "memory")
 # define get_process_id() getpid()
 #endif
@@ -115,6 +124,16 @@ struct ProfilerEngine {
         uint64_t thread_id = 0;
     };
 
+#if LOP_SPILL_TO_DISK
+    // One of these prefixes every segment in the spill file, and a copy is also kept in the
+    // in-memory "spill_segments" index so flush can compute tsc_base without touching disk.
+    struct SpillSegmentHeader {
+        uint64_t thread_id;
+        uint64_t event_count;
+        uint64_t min_timestamp; // earliest timestamp in the segment (its tsc_base contribution)
+    };
+#endif
+
     ProfilerEngine();
     ~ProfilerEngine();
 
@@ -122,12 +141,30 @@ struct ProfilerEngine {
     void remove_event_buffer(EventBuffer* event_buffer);
     void handle_depleted_buffer(EventBuffer* depleted_event_buffer);
 
+    // Allocates a fresh event buffer. With spilling on, never returns null: on OOM it boosts
+    // the spiller to free RAM (by dumping filled buffers to disk) and retries.
+    Event* allocate_event_buffer();
+
     static void scheduler_loop();
 
     void enable();
     void disable();
     void flush(const char* suffix = nullptr);
     void flush_buffers(const char* suffix, const std::vector<BufferState>& buffers);
+    void emit_one_buffer(FILE* file, const BufferState& buffer, unsigned pid, uint64_t tsc_base,
+                         bool& first_event, std::map<uint64_t, Event>& counter_events);
+
+#if LOP_SPILL_TO_DISK
+    static void writer_loop();                       // background spiller thread body
+    static void set_writer_priority(bool high);      // low while idle, boosted under memory pressure
+    bool write_segment_to_disk(const BufferState& seg); // returns false on IO error (seg restored to RAM)
+    bool ensure_spill_file_open();                   // lazily creates the temp file
+    void reset_spill_state();                        // close + delete temp file, clear index
+    void emit_spilled_segments(FILE* file, unsigned pid, uint64_t tsc_base,
+                               bool& first_event, std::map<uint64_t, Event>& counter_events);
+    void park_writer();                              // pause the spiller (flush quiescence)
+    void unpark_writer();                            // resume the spiller
+#endif
 
     CustomTLS** custom_tls; // Must be first field!!! For simplicty, because its accessed
                             // in critical part of asm and I don't want extra offsets there.
@@ -150,6 +187,22 @@ struct ProfilerEngine {
     std::list<EventBuffer*> event_buffers;     // live per-thread buffers
     std::list<BufferState> filled_buffers;     // buffers swapped out after filling up, kept until flush
     std::mutex filled_mutex;
+
+#if LOP_SPILL_TO_DISK
+    // Background spiller. Drains filled_buffers (oldest first) to a temp file and frees the RAM.
+    bool writer_run;
+    std::atomic<bool> memory_pressure{false};   // set on OOM: spiller drains everything ASAP
+    std::mutex writer_mutex;                     // pairs with writer_cv (wake / throttle / park)
+    std::condition_variable writer_cv;
+    bool writer_parked;                          // flush asks the spiller to hold off the file/list
+    bool writer_park_ack;                        // spiller confirms it has parked
+    std::mutex spill_file_mutex;                 // guards spill_file + spill_segments (NOT filled_mutex)
+    FILE* spill_file;                            // lazily created temp file
+    std::string spill_path;
+    std::vector<SpillSegmentHeader> spill_segments; // in-memory index, FIFO append order
+    std::thread writer_thread;                   // MUST be last: starts as soon as it is constructed
+#endif
+
     std::chrono::system_clock::time_point time_enable;
 };
 
@@ -214,6 +267,18 @@ ProfilerEngine::ProfilerEngine()
     event_buffers(),
     filled_buffers(),
     filled_mutex(),
+#if LOP_SPILL_TO_DISK
+    writer_run(true),
+    writer_mutex(),
+    writer_cv(),
+    writer_parked(false),
+    writer_park_ack(false),
+    spill_file_mutex(),
+    spill_file(nullptr),
+    spill_path(),
+    spill_segments(),
+    writer_thread(writer_loop),
+#endif
     time_enable()
 {
     char* disable_string = std::getenv("LOP_DISABLE");
@@ -297,8 +362,290 @@ void ProfilerEngine::scheduler_loop()
         // a non-null backup (the owning thread only ever consumes it), so a plain check-then-
         // store is race free, and we never allocate one we already have.
         if (event_buffer->events_backup.load() == nullptr) {
-            event_buffer->events_backup.store(new Event[LOP_BUFFER_SIZE]);
+            event_buffer->events_backup.store(g_lop_inst.allocate_event_buffer());
         }
+    }
+}
+
+Event* ProfilerEngine::allocate_event_buffer() {
+#if LOP_SPILL_TO_DISK
+    Event* p = new (std::nothrow) Event[LOP_BUFFER_SIZE];
+    if (p) return p;
+
+    // Out of memory. Instead of crashing, turn the spiller into a relief valve: tell it to
+    // drain filled buffers to disk at boosted priority (each freed buffer is ~128 MB) and keep
+    // retrying. As soon as the spiller frees enough, the allocation succeeds and we move on.
+    printf("LOP: buffer allocation failed - draining buffers to disk to reclaim RAM...\n");
+    fflush(stdout);
+    memory_pressure.store(true);
+    {
+        const std::lock_guard<std::mutex> lock(writer_mutex);
+        writer_cv.notify_all();
+    }
+    while (p == nullptr) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // yield the CPU to the spiller
+        p = new (std::nothrow) Event[LOP_BUFFER_SIZE];
+    }
+    return p;
+#else
+    return new Event[LOP_BUFFER_SIZE];
+#endif
+}
+
+#if LOP_SPILL_TO_DISK
+void ProfilerEngine::set_writer_priority(bool high) {
+    // Best-effort: failures (e.g. missing privileges) are fine - priority is only an optimization.
+#if defined(_WIN32) || defined(_WIN64)
+    SetThreadPriority(GetCurrentThread(), high ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_LOWEST);
+#else
+    struct sched_param sp;
+    sp.sched_priority = 0;
+    // SCHED_IDLE <-> SCHED_OTHER avoids the "nice ratchet" (a thread can't lower its nice and
+    // then raise it back without privileges, but switching scheduling policy back is allowed).
+    if (pthread_setschedparam(pthread_self(), high ? SCHED_OTHER : SCHED_IDLE, &sp) != 0) {
+        setpriority(PRIO_PROCESS, 0, high ? 0 : 19);
+    }
+#endif
+}
+
+bool ProfilerEngine::ensure_spill_file_open() {
+    if (spill_file) return true;
+
+    const char* dir = std::getenv("TMPDIR");
+#if defined(_WIN32) || defined(_WIN64)
+    if (!dir) dir = std::getenv("TEMP");
+    if (!dir) dir = ".";
+#else
+    if (!dir) dir = "/tmp";
+#endif
+    char path[256];
+    snprintf(path, sizeof(path), "%s/lop_spill_pid%u.tmp", dir, static_cast<unsigned>(get_process_id()));
+    spill_path = path;
+    spill_file = fopen(spill_path.c_str(), "wb+");
+    if (!spill_file) {
+        printf("LOP: couldn't open spill file '%s'; keeping buffers in RAM.\n", spill_path.c_str());
+        spill_path.clear();
+    }
+    return spill_file != nullptr;
+}
+
+void ProfilerEngine::reset_spill_state() {
+    const std::lock_guard<std::mutex> lock(spill_file_mutex);
+    if (spill_file) {
+        fclose(spill_file);
+        spill_file = nullptr;
+    }
+    if (!spill_path.empty()) {
+        remove(spill_path.c_str());
+        spill_path.clear();
+    }
+    spill_segments.clear();
+}
+
+bool ProfilerEngine::write_segment_to_disk(const BufferState& seg) {
+    const uint64_t count = static_cast<uint64_t>(seg.next_event - seg.events);
+
+    // The earliest timestamp in the segment is its contribution to the global tsc_base. We scan
+    // for it here (on the low-priority thread, while the data is cache-warm) so that flush can
+    // compute tsc_base from headers alone, without re-reading event payloads from disk.
+    uint64_t min_ts = count ? seg.events[0].timestamp : 0;
+    for (uint64_t i = 1; i < count; ++i) {
+        if (seg.events[i].timestamp < min_ts) min_ts = seg.events[i].timestamp;
+    }
+    SpillSegmentHeader hdr{ seg.thread_id, count, min_ts };
+
+    bool ok = false;
+    {
+        const std::lock_guard<std::mutex> lock(spill_file_mutex);
+        if (ensure_spill_file_open()) {
+            ok = fwrite(&hdr, sizeof(hdr), 1, spill_file) == 1
+                 && (count == 0 || fwrite(seg.events, sizeof(Event), count, spill_file) == count);
+            if (ok) spill_segments.push_back(hdr);
+        }
+    }
+
+    if (ok) {
+        delete[] seg.events; // ownership was transferred to us when we popped it; ~128 MB freed
+        return true;
+    }
+
+    // IO failure: put the segment back at the front so flush still emits it from RAM. We never
+    // lose events; we just don't get the memory saving for this one.
+    {
+        const std::lock_guard<std::mutex> lock(filled_mutex);
+        filled_buffers.push_front(seg);
+    }
+    return false;
+}
+
+void ProfilerEngine::writer_loop() {
+    ProfilerEngine& self = g_lop_inst;
+    set_writer_priority(false);
+    bool boosted = false;
+
+    while (self.writer_run) {
+        // Park handshake: flush asks us to stop touching the file/list while it reads them.
+        {
+            std::unique_lock<std::mutex> lock(self.writer_mutex);
+            if (self.writer_parked) {
+                self.writer_park_ack = true;
+                self.writer_cv.notify_all();
+                self.writer_cv.wait(lock, [&] { return !self.writer_parked || !self.writer_run; });
+                continue;
+            }
+        }
+
+        const bool pressure = self.memory_pressure.load();
+        if (pressure && !boosted) { set_writer_priority(true); boosted = true; }
+
+        // Critical section 1: pop the oldest filled buffer (FIFO preserves per-thread fill order).
+        // Under memory pressure we drain everything; otherwise we leave a small RAM cushion.
+        BufferState seg{};
+        bool have = false;
+        {
+            const std::lock_guard<std::mutex> lock(self.filled_mutex);
+            const size_t keep = pressure ? 0u : static_cast<size_t>(LOP_SPILL_RAM_THRESHOLD);
+            if (self.filled_buffers.size() > keep) {
+                seg = self.filled_buffers.front();
+                self.filled_buffers.pop_front();
+                have = true;
+            }
+        }
+        // filled_mutex released here: the slow fwrite below never blocks handle_depleted_buffer.
+
+        if (!have) {
+            if (boosted) { // nothing left to spill: pressure is relieved, go back to idle priority
+                self.memory_pressure.store(false);
+                set_writer_priority(false);
+                boosted = false;
+            }
+            std::unique_lock<std::mutex> lock(self.writer_mutex);
+            self.writer_cv.wait_for(lock, std::chrono::milliseconds(5));
+            continue;
+        }
+
+        if (!self.write_segment_to_disk(seg)) {
+            std::unique_lock<std::mutex> lock(self.writer_mutex);
+            self.writer_cv.wait_for(lock, std::chrono::milliseconds(50)); // IO error: back off
+            continue;
+        }
+
+        if (!pressure) { // gentle throttle between segments; skipped while relieving pressure
+            std::unique_lock<std::mutex> lock(self.writer_mutex);
+            self.writer_cv.wait_for(lock, std::chrono::milliseconds(LOP_SPILL_THROTTLE_MS));
+        }
+    }
+}
+
+void ProfilerEngine::park_writer() {
+    std::unique_lock<std::mutex> lock(writer_mutex);
+    writer_parked = true;
+    writer_cv.notify_all();
+    writer_cv.wait(lock, [this] { return writer_park_ack || !writer_run; });
+}
+
+void ProfilerEngine::unpark_writer() {
+    std::unique_lock<std::mutex> lock(writer_mutex);
+    writer_parked = false;
+    writer_park_ack = false;
+    writer_cv.notify_all();
+}
+
+void ProfilerEngine::emit_spilled_segments(FILE* file, unsigned pid, uint64_t tsc_base,
+                                           bool& first_event, std::map<uint64_t, Event>& counter_events) {
+    if (spill_segments.empty() || !spill_file) return;
+
+    // The spiller is parked, so we have exclusive access to the file. Replay it front-to-back -
+    // the same order the segments were filled - into one reused scratch buffer, one at a time.
+    fflush(spill_file);
+    fseek(spill_file, 0, SEEK_SET);
+    Event* scratch = new Event[LOP_BUFFER_SIZE];
+    for (const SpillSegmentHeader& indexed : spill_segments) {
+        SpillSegmentHeader hdr;
+        if (fread(&hdr, sizeof(hdr), 1, spill_file) != 1) break;
+        const uint64_t count = hdr.event_count;
+        if (count) {
+            if (fread(scratch, sizeof(Event), count, spill_file) != count) break;
+        }
+        BufferState bs;
+        bs.events = scratch;
+        bs.next_event = scratch + count;
+        bs.thread_id = hdr.thread_id;
+        emit_one_buffer(file, bs, pid, tsc_base, first_event, counter_events);
+    }
+    delete[] scratch;
+}
+#endif // LOP_SPILL_TO_DISK
+
+void ProfilerEngine::emit_one_buffer(FILE* file, const BufferState& buffer, unsigned pid,
+                                     uint64_t tsc_base, bool& first_event,
+                                     std::map<uint64_t, Event>& COUNTER_events) {
+    Event* event = buffer.events;
+    uint64_t event_thread_id = buffer.thread_id;
+    for (; event < buffer.next_event; ++event) {
+        auto tsc_diff = event->timestamp - tsc_base;
+        auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
+
+        if (event->type == COUNTER_INT) {
+            // Sort COUNTER_INT events in the meantime using ordered map and process them later.
+            // Chrome tracing requires that they are sorted by timestamps, otherwise it glitches.
+            // And no, that "feature" is not documented anywhere.
+            // Stored BY VALUE (not by pointer): when this buffer came from disk, "event" points
+            // into a scratch buffer that is freed before the deferred counter pass runs.
+            COUNTER_events.insert({ event->timestamp, *event });
+        }
+        else if (event->type == CALL_BEGIN || event->type == CALL_END) {
+            const char* eventPh = (event->type == CALL_BEGIN) ? "B" : "E";
+            fprintf(file,
+                "%c{"
+                "\"tid\":\"%" PRIx64 "\","
+                "\"pid\":%u,"
+                "\"ts\":%" PRIu64 ".%03" PRIu64 ","
+                "\"name\":\"%s\","
+                "\"ph\":\"%s\""
+                "}\n",
+                first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh);
+        }
+        else if (event->type == CALL_BEGIN_META || event->type == CALL_END_META) {
+            const char* eventPh = (event->type == CALL_BEGIN_META) ? "B" : "E";
+            const char* metaName = (event->type == CALL_BEGIN_META) ? "b_meta" : "e_meta";
+            fprintf(file,
+                "%c{"
+                "\"tid\":\"%" PRIx64 "\","
+                "\"pid\":%u,"
+                "\"ts\":%" PRIu64 ".%03" PRIu64 ","
+                "\"name\":\"%s\","
+                "\"ph\":\"%s\","
+                "\"args\":{"
+                "\"%s\":\"%" PRIx64 "\""
+                "}"
+                "}\n",
+                first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh, metaName, event->metadata);
+        }
+        else if (event->type == FLOW_START || event->type == FLOW_FINISH) {
+            const char* eventPh = (event->type == FLOW_START) ? "s" : "f";
+            uint32_t truncated_flow_id = (uint32_t)event->metadata; // perfetto supports only 32bit flow IDs.
+            fprintf(file,
+                "%c{"
+                "\"tid\":\"%" PRIx64 "\","
+                "\"pid\":%u,"
+                "\"ts\":%" PRIu64 ".%03" PRIu64 ","
+                "\"name\":\"flow\","
+                "\"ph\":\"%s\","
+                "\"bp\":\"e\","
+                "\"id\":%" PRIu32 ","
+                "\"args\":{"
+                "\"flow_id\":\"%" PRIx64 "\""
+                "}"
+                "}\n",
+                first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, truncated_flow_id, event->metadata);
+        }
+        else {
+            printf("Unknown event type. Bailing out.\n");
+            return;
+        }
+
+        first_event = false;
     }
 }
 
@@ -310,6 +657,14 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
     compiler_barrier();
 
     uint64_t events_counter = 0;
+#if LOP_SPILL_TO_DISK
+    // Buffers already spilled to disk are emitted first (they are the oldest), so count them first.
+    for (const SpillSegmentHeader& hdr : spill_segments) {
+        printf("Got %" PRIu64 "/%" PRIu32 " (%" PRIu64 "%%) spilled events of thread: %" PRIx64 "\n",
+            hdr.event_count, LOP_BUFFER_SIZE, hdr.event_count * 100 / LOP_BUFFER_SIZE, hdr.thread_id);
+        events_counter += hdr.event_count;
+    }
+#endif
     for (const BufferState& buffer : buffers) {
         uint64_t events_in_buffer = buffer.next_event - buffer.events;
         printf("Got %" PRIu64 "/%" PRIu32 " (%" PRIu64 "%%) events in buffer of thread: %" PRIx64 "\n",
@@ -340,8 +695,12 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
     auto file = fopen(name, "w");
     fprintf(file,"{\"displayTimeUnit\": \"ns\", \"traceEvents\": [\n");
 
-    // Find first event, timewise.
+    // Find first event, timewise - across BOTH the spilled segments and what is still in RAM.
     uint64_t tsc_base = std::numeric_limits<uint64_t>::max();
+#if LOP_SPILL_TO_DISK
+    for (const SpillSegmentHeader& hdr : spill_segments) // headers carry each segment's min (no disk read)
+        if (hdr.event_count && hdr.min_timestamp < tsc_base) tsc_base = hdr.min_timestamp;
+#endif
     for (const BufferState& buffer : buffers) {
         Event* event = buffer.events;
         for (; event < buffer.next_event; ++event)
@@ -358,74 +717,13 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
         printf("Measured %f ticks per nanosecond\n", ticks_per_ns_ratio);
     }
     bool first_event = true;
-    std::map<uint64_t, Event*> COUNTER_events;
-    for (const BufferState& buffer : buffers) {
-        Event* event = buffer.events;
-        uint64_t event_thread_id = buffer.thread_id;
-        for (; event < buffer.next_event; ++event) {
-            auto tsc_diff = event->timestamp - tsc_base;
-            auto time_ns = static_cast<uint64_t>(static_cast<double>(tsc_diff) / ticks_per_ns_ratio);
-
-            if (event->type == COUNTER_INT) {
-                // Sort COUNTER_INT events in the meantime using ordered map and process them later.
-                // Chrome tracing requires that they are sorted by timestamps, otherwise it glitches.
-                // And no, that "feature" is not documented anywhere.
-                COUNTER_events.insert({ event->timestamp, event });
-            }
-            else if (event->type == CALL_BEGIN || event->type == CALL_END) {
-                const char* eventPh = (event->type == CALL_BEGIN) ? "B" : "E";
-                fprintf(file,
-                    "%c{"
-                    "\"tid\":\"%" PRIx64 "\","
-                    "\"pid\":%u,"
-                    "\"ts\":%" PRIu64 ".%03" PRIu64 ","
-                    "\"name\":\"%s\","
-                    "\"ph\":\"%s\""
-                    "}\n",
-                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh);
-            }
-            else if (event->type == CALL_BEGIN_META || event->type == CALL_END_META) {
-                const char* eventPh = (event->type == CALL_BEGIN_META) ? "B" : "E";
-                const char* metaName = (event->type == CALL_BEGIN_META) ? "b_meta" : "e_meta";
-                fprintf(file,
-                    "%c{"
-                    "\"tid\":\"%" PRIx64 "\","
-                    "\"pid\":%u,"
-                    "\"ts\":%" PRIu64 ".%03" PRIu64 ","
-                    "\"name\":\"%s\","
-                    "\"ph\":\"%s\","
-                    "\"args\":{"
-                    "\"%s\":\"%" PRIx64 "\""
-                    "}"
-                    "}\n",
-                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, event->name, eventPh, metaName, event->metadata);
-            }
-            else if (event->type == FLOW_START || event->type == FLOW_FINISH) {
-                const char* eventPh = (event->type == FLOW_START) ? "s" : "f";
-                uint32_t truncated_flow_id = (uint32_t)event->metadata; // perfetto supports only 32bit flow IDs.
-                fprintf(file,
-                    "%c{"
-                    "\"tid\":\"%" PRIx64 "\","
-                    "\"pid\":%u,"
-                    "\"ts\":%" PRIu64 ".%03" PRIu64 ","
-                    "\"name\":\"flow\","
-                    "\"ph\":\"%s\","
-                    "\"bp\":\"e\","
-                    "\"id\":%" PRIu32 ","
-                    "\"args\":{"
-                    "\"flow_id\":\"%" PRIx64 "\""
-                    "}"
-                    "}\n",
-                    first_event ? ' ' : ',', event_thread_id, pid, time_ns / 1000, time_ns % 1000, eventPh, truncated_flow_id, event->metadata);
-            }
-            else {
-                printf("Unknown event type. Bailing out.\n");
-                return;
-            }
-
-            first_event = false;
-        }
-    }
+    std::map<uint64_t, Event> COUNTER_events;
+    // Emit in fill order: spilled-to-disk segments (oldest), then in-RAM filled buffers, then live.
+#if LOP_SPILL_TO_DISK
+    emit_spilled_segments(file, static_cast<unsigned>(pid), tsc_base, first_event, COUNTER_events);
+#endif
+    for (const BufferState& buffer : buffers)
+        emit_one_buffer(file, buffer, static_cast<unsigned>(pid), tsc_base, first_event, COUNTER_events);
 
     for (const auto& [timestamp, event] : COUNTER_events) {
         auto tsc_diff = timestamp - tsc_base;
@@ -440,7 +738,7 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
             "\"val\":%" PRIu64 ""
             "}"
             "}\n",
-            first_event ? ' ' : ',', pid, time_ns / 1000, time_ns % 1000, event->name, event->metadata);
+            first_event ? ' ' : ',', pid, time_ns / 1000, time_ns % 1000, event.name, event.metadata);
 
         first_event = false;
     }
@@ -451,8 +749,6 @@ void ProfilerEngine::flush_buffers(const char* suffix, const std::vector<BufferS
 
 void ProfilerEngine::flush(const char* suffix) {
     const std::lock_guard<std::mutex> control_lock(control_mutex);
-    const std::lock_guard<std::mutex> buffer_lock(buffers_mutex);
-    const std::lock_guard<std::mutex> filled_lock(filled_mutex);
     printf("ProfilerEngine::flush at PID:%u\n", get_process_id());
     if (suffix) printf("Flushing for suffix: \"%s\"\n", suffix);
     fflush(stdout);
@@ -466,6 +762,15 @@ void ProfilerEngine::flush(const char* suffix) {
         printf("Tried to flush already flushed LOP. Doing nothing.");
         return;
     }
+
+#if LOP_SPILL_TO_DISK
+    // Park the spiller before we touch the spill file or the filled list, so it can't race us.
+    // This MUST happen before we take filled_mutex: the spiller briefly holds filled_mutex to
+    // pop a segment, and parking waits for it to reach a safe point.
+    park_writer();
+#endif
+    const std::lock_guard<std::mutex> buffer_lock(buffers_mutex);
+    const std::lock_guard<std::mutex> filled_lock(filled_mutex);
 
     // Gather everything for a single combined trace: the buffers that filled up and were
     // swapped out during the run, plus what is left in the current live buffers.
@@ -495,6 +800,14 @@ void ProfilerEngine::flush(const char* suffix) {
         buffer->next_event = buffer->events; // re-initialize current buffers
     }
 
+#if LOP_SPILL_TO_DISK
+    // The spilled segments have been merged into the trace; delete the temp file so a subsequent
+    // re-enabled session starts with a clean slate, then let the spiller run again.
+    reset_spill_state();
+    memory_pressure.store(false);
+    unpark_writer();
+#endif
+
     flushed = true;
 
     printf("ProfilerEngine::flush finished\n"); fflush(stdout);
@@ -505,14 +818,26 @@ ProfilerEngine::~ProfilerEngine() {
 
     scheduler_run = false;
     scheduler_thread.join();
-    
+
     if (running) {
         disable();
 
         if (!flushed) {
-            flush();
+            flush(); // flush() parks/unparks the still-live spiller and emits the spilled segments
         }
     }
+
+#if LOP_SPILL_TO_DISK
+    // Now stop the spiller for good and make sure no temp file is left behind.
+    writer_run = false;
+    {
+        std::unique_lock<std::mutex> lock(writer_mutex);
+        writer_parked = false;
+        writer_cv.notify_all();
+    }
+    writer_thread.join();
+    reset_spill_state();
+#endif
 
     printf("ProfilerEngine::~ProfilerEngine finished\n"); fflush(stdout);
 }
@@ -537,17 +862,22 @@ void ProfilerEngine::handle_depleted_buffer(EventBuffer* depleted_event_buffer) 
     // synchronously so we never crash - only this one unlucky event pays for it.
     Event* fresh_buffer = depleted_event_buffer->events_backup.exchange(nullptr);
     if (fresh_buffer == nullptr) {
-        fresh_buffer = new Event[LOP_BUFFER_SIZE];
+        fresh_buffer = allocate_event_buffer(); // relief-valve aware: never crashes on OOM
     }
 
-    // Retain the just-filled buffer so it gets parsed at flush. Ownership of the old "events"
-    // allocation moves into the filled list (it is freed in flush()).
+    // Retain the just-filled buffer so it gets parsed (or spilled) at flush. Ownership of the old
+    // "events" allocation moves into the filled list (freed in flush(), or by the spiller).
     {
         const std::lock_guard<std::mutex> lock(filled_mutex);
         filled_buffers.push_back({ depleted_event_buffer->next_event,
                                    depleted_event_buffer->events,
                                    depleted_event_buffer->thread_id });
     }
+#if LOP_SPILL_TO_DISK
+    // Nudge the spiller so it considers the newly filled buffer promptly (it would otherwise
+    // pick it up on its next 5 ms poll). Cheap and off the asm hot path.
+    writer_cv.notify_one();
+#endif
 
     // Swap the fresh buffer in. The asm caller is paused mid-fallback and will reload
     // next_event from memory when it retries, so the barrier is enough - no atomics needed.
@@ -564,10 +894,10 @@ void ProfilerEngine::handle_depleted_buffer(EventBuffer* depleted_event_buffer) 
 
 EventBuffer::EventBuffer() {
     thread_id = _asm_get_tid();
-    events = new Event[LOP_BUFFER_SIZE];
+    events = g_lop_inst.allocate_event_buffer();
 
 #if LOP_DOUBLE_BUFFER
-    events_backup = new Event[LOP_BUFFER_SIZE];
+    events_backup = g_lop_inst.allocate_event_buffer();
 #endif
 
     next_event = events;

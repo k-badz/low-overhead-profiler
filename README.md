@@ -17,6 +17,14 @@ This code should not be used in a product, it omits various security checks for 
     during very long sessions. Set LOP_DOUBLE_BUFFER to 0 to get the original zero-overhead unsafe
     mode (no bounds check, can overflow). See the profiler.h header for details.
 
+    To bound that memory growth automatically, LOP_SPILL_TO_DISK (also on by default) adds a
+    low-priority background thread that streams filled buffers to a temporary file as raw binary
+    and frees their RAM; at flush time the trace is assembled from both the spilled segments and
+    whatever is still in RAM, so nothing is lost. It stays out of the hot path entirely and, if a
+    buffer allocation ever fails, it boosts the spiller to reclaim RAM instead of crashing. The
+    spill file holds raw (still-valid) name pointers, so it is only meaningful within the same
+    process run. Set LOP_SPILL_TO_DISK to 0 to keep all filled buffers in RAM until flush.
+
 For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 
 Also, if you require something that would allow you to trace a binary instead, you can check my other [experimental tracer project](https://github.com/k-badz/binary-tracer) which builds on top of this repo.

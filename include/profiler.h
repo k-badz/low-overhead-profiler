@@ -61,6 +61,31 @@
 // (Linux) and profiler_asm.asm (Windows).
 #define LOP_DOUBLE_BUFFER 1
 
+// Background spill-to-disk. With this enabled (the default), a dedicated low-priority
+// background thread continuously dumps filled buffers (the ones double buffering keeps in a
+// linked list) to a single temporary file as RAW BINARY (no parsing - just the Event bytes),
+// then frees that ~128 MB of RAM. At flush time the trace is assembled from BOTH the spilled
+// disk segments and whatever is still in RAM, so nothing is lost. This bounds memory growth on
+// long runs without touching the hot path at all.
+// Things to keep in mind:
+// - the asm hot path is NOT involved, so - unlike LOP_DOUBLE_BUFFER - this macro lives only
+//   here and in profiler.cpp; the asm files need no changes and no sync.
+// - the spiller stays out of the way: it runs at the lowest OS priority and throttles itself.
+//   If it ever can't keep up, filled buffers simply stay in RAM (same as with spilling off) -
+//   it is a best-effort memory optimization, never a correctness requirement.
+// - if a buffer allocation ever fails (RAM exhausted), the profiler does NOT crash: it boosts
+//   the spiller to drain buffers to disk and retries the allocation once RAM is reclaimed.
+// - the spill file holds raw Event structs, including the (still-valid) name pointers, so it is
+//   only meaningful within the SAME process run - it is not a portable/persistent trace.
+// LOP_SPILL_RAM_THRESHOLD is how many filled buffers are kept in RAM before the spiller starts
+// writing the excess to disk (so short runs never touch the disk at all).
+// Requires LOP_DOUBLE_BUFFER. Set to 0 to keep all filled buffers in RAM until flush.
+#define LOP_SPILL_TO_DISK 1
+#define LOP_SPILL_RAM_THRESHOLD 2
+#if LOP_SPILL_TO_DISK && !LOP_DOUBLE_BUFFER
+#  error "LOP_SPILL_TO_DISK requires LOP_DOUBLE_BUFFER (it spills the filled_buffers list)."
+#endif
+
 namespace LOP {
 
 // Self-explanatory, I guess.
