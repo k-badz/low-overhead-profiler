@@ -50,15 +50,15 @@ jobs:
       - name: Build and run example (default config)
         shell: cmd
         run: |
-          ml64 /nologo /c src\profiler_asm.asm ^
-          && cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp src\profiler.cpp profiler_asm.obj /Fe:example.exe ^
-          && example.exe
+          ml64 /nologo /c src\profiler_asm.asm || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp src\profiler.cpp profiler_asm.obj /Fe:example.exe || exit /b 1
+          example.exe || exit /b 1
 
       - name: Build and run context example (3-slot flow path)
         shell: cmd
         run: |
-          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\context_example.cpp src\profiler.cpp profiler_asm.obj /Fe:context_example.exe ^
-          && context_example.exe
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\context_example.cpp src\profiler.cpp profiler_asm.obj /Fe:context_example.exe || exit /b 1
+          context_example.exe || exit /b 1
 
       - name: Patch a tiny-buffer build (forces buffer rotation -> real spilling)
         shell: pwsh
@@ -71,7 +71,7 @@ jobs:
       - name: Build and run forced-spill test, then validate the merged trace
         shell: cmd
         run: |
-          ml64 /nologo /c tinybuild\profiler_asm.asm ^
-          && cl /nologo /std:c++17 /EHsc /O2 /Itinybuild test\spill_test.cpp tinybuild\profiler.cpp profiler_asm.obj /Fe:spill_test.exe ^
-          && spill_test.exe 20000 ^
-          && python test\validate.py . 80000 4
+          ml64 /nologo /c tinybuild\profiler_asm.asm || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Itinybuild test\spill_test.cpp tinybuild\profiler.cpp profiler_asm.obj /Fe:spill_test.exe || exit /b 1
+          spill_test.exe 20000 || exit /b 1
+          python test\validate.py . 80000 4 || exit /b 1
