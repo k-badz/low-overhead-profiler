@@ -1,20 +1,19 @@
 /**
- * Per-event tracing-overhead benchmark, backend-agnostic.
+ * Per-event tracing-overhead benchmark (header-only profiler).
  *
- * Link it against either backend (the difference is the only thing that changes):
- *   g++ -O2 -std=c++17 -pthread -Iinclude test/bench.cpp src/profiler_asm.cpp src/profiler.cpp
- *   g++ -O2 -std=c++17 -pthread -Iinclude test/bench.cpp src/profiler_cpp.cpp src/profiler.cpp
+ *   g++ -O2 -std=c++17 -pthread -Iinclude test/bench.cpp -o bench
  *
  * Method (matches the owner's manual approach): run the SAME loop with tracing off then on; the
- * wall-time delta divided by events emitted is the per-event overhead. Because the public emit
- * wrappers are just `if (enabled) backend(...)`, the off run pays only a predicted-not-taken
- * branch, so the delta isolates the backend body -> a clean asm-vs-C++ comparison. After the runs
- * it flushes a trace so test/bench_report.py can also report the smallest gap between two
- * consecutive events (the optimistic minimal overhead).
+ * wall-time delta divided by events emitted is the per-event overhead. Because the inline emit
+ * functions are just `if (enabled) { ...hot path... }`, the off run pays only a predicted-not-taken
+ * branch, so the delta isolates the hot-path body. After the runs it flushes a trace so
+ * test/bench_report.py can also report the smallest gap between two consecutive events (the
+ * optimistic minimal overhead).
  *
  * Defaults keep the total enabled events below LOP_BUFFER_SIZE so no buffer rotation pollutes the
  * hot-path number. Override with argv or LOP_BENCH_PAIRS / LOP_BENCH_REPS.
  */
+#define LOP_IMPLEMENTATION   // header-only: this standalone bench is the engine's one TU
 #include "profiler.h"
 
 #include <chrono>

@@ -1,3 +1,5 @@
+// Header-only: this standalone program is the one TU that compiles the profiler engine.
+#define LOP_IMPLEMENTATION
 #include "profiler.h"
 
 #include <stdint.h>

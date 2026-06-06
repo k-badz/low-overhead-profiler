@@ -6,15 +6,19 @@ End-to-end tests for the background spill-to-disk feature (`LOP_SPILL_TO_DISK`).
 ./test/run_tests.sh
 ```
 
-Linux/x64 only (uses the GCC inline-asm backend `src/profiler_asm.cpp`); needs `g++` and
-`python3`. The script prints `ALL TESTS PASSED` and exits 0 on success.
+Linux/x64 only; needs `g++` and `python3`. The script prints `ALL TESTS PASSED` and exits 0 on
+success.
+
+The profiler is header-only, so each scenario just compiles the multi-threaded harness
+`spill_test.cpp` with the relevant config overridden via `-D` (a tiny `LOP_BUFFER_SIZE` to force
+buffer rotation cheaply, or spilling toggled on/off), runs it, and validates the resulting trace
+with `validate.py`.
+
+There is also `./test/run_bench.sh`, which builds `bench.cpp` and reports per-event tracing
+overhead (wall-time delta of tracing on vs off) plus the smallest observed gap between two
+consecutive events.
 
 ## What it does
-
-`LOP_BUFFER_SIZE` and the feature flags are compile-time constants, so each scenario compiles the
-profiler from a patched copy of the sources (a tiny buffer to force buffer rotation cheaply, or
-spilling toggled on/off), runs the multi-threaded harness `spill_test.cpp`, and validates the
-resulting trace with `validate.py`.
 
 | Scenario | What it checks |
 |----------|----------------|

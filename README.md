@@ -31,30 +31,28 @@ Also, if you require something that would allow you to trace a binary instead, y
 
 ## How to setup:
 
-1. Copy the include/profiler.h and src/profiler.cpp directories somewhere into your project
-2. Also copy the interesting src/profiler_asm file from the src directory (choose .asm for Windows MASM and .cpp for Linux GCC inline assembly)
-3. Setup compilation appropriately to your build engine. You need to enable C++17 in your compiler for these files.
-4. Compile and enjoy.
+It is a **header-only** library — one file, pure C++17, same code on Windows and Linux (no MASM,
+no assembler, no separate backend to build).
 
-* For linux, compiling example is as simple as this:  
-`g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -std=c++17 -Iinclude -O2`
+1. Copy `include/profiler.h` into your project and `#include "profiler.h"` wherever you trace.
+2. In **exactly one** `.cpp` of your program, define `LOP_IMPLEMENTATION` before the include — that
+   translation unit compiles the engine (background threads, flush, etc.):
 
-* For windows, you need to add the files to solution, enable C++17, enable MASM compiler for asm file, add include directory path, and then build the solution.
+   ```cpp
+   #define LOP_IMPLEMENTATION
+   #include "profiler.h"
+   ```
 
-### Backends
+   (Zero such TUs → undefined references; more than one → duplicate symbols.)
+3. Build with C++17 and a thread library. On Linux/GCC that means `-pthread`.
 
-The per-event hot path has two interchangeable implementations exporting the same symbols; pick
-exactly **one** (compiling both collides at link time):
+* Compiling the example (which itself defines `LOP_IMPLEMENTATION`) is just:
+  `g++ samples/example.cpp -std=c++17 -Iinclude -O2 -pthread`
+* On Windows/MSVC: `cl /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp`
 
-* `src/profiler_asm.cpp` (Linux GCC inline asm) / `src/profiler_asm.asm` (Windows MASM) — the
-  default, hand-written assembly.
-* `src/profiler_cpp.cpp` — a portable pure-C++ backend, identical on Windows and Linux (no MASM
-  needed). Swap it in by compiling it instead of the asm file, e.g.
-  `g++ samples/example.cpp src/profiler_cpp.cpp src/profiler.cpp -std=c++17 -Iinclude -O2`.
-
-`test/run_bench.sh` builds both and compares per-event tracing overhead (they come out within
-noise of each other). On the test machines the C++ backend matches the assembly, so it is a
-drop-in option if you'd rather not deal with the MASM toolchain.
+The compile-time options (`LOP_DOUBLE_BUFFER`, `LOP_SPILL_TO_DISK`, `LOP_SPILL_RAM_THRESHOLD`,
+`LOP_BUFFER_SIZE`) live only in `profiler.h` and can be overridden with `-D` or by `#define`-ing
+them before the include — a single source of truth.
 
 ## How to use:
 

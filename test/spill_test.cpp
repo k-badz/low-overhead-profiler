@@ -13,6 +13,7 @@
  *
  * Usage: spill_test [pairs_per_thread]   (default 20000)
  */
+#define LOP_IMPLEMENTATION   // header-only: this standalone test is the engine's one TU
 #include "profiler.h"
 #include <thread>
 #include <chrono>
