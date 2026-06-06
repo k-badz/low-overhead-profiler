@@ -11,7 +11,7 @@ jobs:
     name: Linux (GCC inline asm)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y g++ python3
@@ -36,29 +36,9 @@ jobs:
     name: Windows (MASM + MSVC)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Set up MSVC (x64)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Build and run example (default config)
-        shell: cmd
-        run: |
-          ml64 /nologo /c src\profiler_asm.asm || exit /b 1
-          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp src\profiler.cpp profiler_asm.obj /Fe:example.exe || exit /b 1
-          example.exe || exit /b 1
-
-      - name: Build and run context example (3-slot flow path)
-        shell: cmd
-        run: |
-          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\context_example.cpp src\profiler.cpp profiler_asm.obj /Fe:context_example.exe || exit /b 1
-          context_example.exe || exit /b 1
+      - uses: actions/checkout@v5
+      # No setup-python action: windows-latest ships Python on PATH. No msvc-dev-cmd action
+      # either: the MSVC environment is set up inline via vswhere + vcvars64.bat below.
 
       - name: Patch a tiny-buffer build (forces buffer rotation -> real spilling)
         shell: pwsh
@@ -68,9 +48,22 @@ jobs:
           (Get-Content src\profiler_asm.asm -Raw).Replace('LOP_BUFFER_SIZE equ 0400000h','LOP_BUFFER_SIZE equ 0100h')             | Set-Content tinybuild\profiler_asm.asm
           (Get-Content include\profiler.h   -Raw).Replace('#define LOP_SPILL_RAM_THRESHOLD 2','#define LOP_SPILL_RAM_THRESHOLD 1') | Set-Content tinybuild\profiler.h
 
-      - name: Build and run forced-spill test, then validate the merged trace
+      - name: Build and test (MASM + MSVC)
         shell: cmd
         run: |
+          rem --- locate Visual Studio and enter the x64 developer environment inline ---
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH ( echo Visual Studio with C++ tools not found & exit /b 1 )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+
+          rem --- default config: build and run both samples ---
+          ml64 /nologo /c src\profiler_asm.asm || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp src\profiler.cpp profiler_asm.obj /Fe:example.exe || exit /b 1
+          example.exe || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\context_example.cpp src\profiler.cpp profiler_asm.obj /Fe:context_example.exe || exit /b 1
+          context_example.exe || exit /b 1
+
+          rem --- tiny-buffer config: forced spill, then validate the merged trace ---
           ml64 /nologo /c tinybuild\profiler_asm.asm || exit /b 1
           cl /nologo /std:c++17 /EHsc /O2 /Itinybuild test\spill_test.cpp tinybuild\profiler.cpp profiler_asm.obj /Fe:spill_test.exe || exit /b 1
           spill_test.exe 20000 || exit /b 1
