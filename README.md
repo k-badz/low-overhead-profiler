@@ -41,6 +41,21 @@ Also, if you require something that would allow you to trace a binary instead, y
 
 * For windows, you need to add the files to solution, enable C++17, enable MASM compiler for asm file, add include directory path, and then build the solution.
 
+### Backends
+
+The per-event hot path has two interchangeable implementations exporting the same symbols; pick
+exactly **one** (compiling both collides at link time):
+
+* `src/profiler_asm.cpp` (Linux GCC inline asm) / `src/profiler_asm.asm` (Windows MASM) — the
+  default, hand-written assembly.
+* `src/profiler_cpp.cpp` — a portable pure-C++ backend, identical on Windows and Linux (no MASM
+  needed). Swap it in by compiling it instead of the asm file, e.g.
+  `g++ samples/example.cpp src/profiler_cpp.cpp src/profiler.cpp -std=c++17 -Iinclude -O2`.
+
+`test/run_bench.sh` builds both and compares per-event tracing overhead (they come out within
+noise of each other). On the test machines the C++ backend matches the assembly, so it is a
+drop-in option if you'd rather not deal with the MASM toolchain.
+
 ## How to use:
 
 1. The interface specified in include/profiler.h is quite self-explanatory, but I added samples directory with practical examples of usage.

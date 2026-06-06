@@ -25,6 +25,11 @@ trap 'rm -rf "$WORK"; rm -f /tmp/lop_spill_pid*.tmp' EXIT
 
 fail() { echo "FAILED: $*" >&2; exit 1; }
 
+# Which hot-path backend to exercise. Default is the assembly backend; set LOP_BACKEND=profiler_cpp.cpp
+# to run the whole correctness suite against the pure-C++ backend instead.
+BACKEND="${LOP_BACKEND:-profiler_asm.cpp}"
+echo "Using backend: $BACKEND"
+
 # prepare <dir> <bufsize> <spill_on> <threshold>: patched copy of the profiler sources.
 prepare() {
     local dir="$1" bufsize="$2" spill="$3" thresh="$4"
@@ -32,7 +37,7 @@ prepare() {
     sed "s/#define LOP_BUFFER_SIZE 0x400000U/#define LOP_BUFFER_SIZE ${bufsize}/" \
         "$ROOT/src/profiler.cpp" > "$dir/profiler.cpp"
     sed "s/#define LOP_BUFFER_SIZE 0x400000U/#define LOP_BUFFER_SIZE ${bufsize}/" \
-        "$ROOT/src/profiler_asm.cpp" > "$dir/profiler_asm.cpp"
+        "$ROOT/src/$BACKEND" > "$dir/$BACKEND"
     sed -e "s/#define LOP_SPILL_TO_DISK 1/#define LOP_SPILL_TO_DISK ${spill}/" \
         -e "s/#define LOP_SPILL_RAM_THRESHOLD 2/#define LOP_SPILL_RAM_THRESHOLD ${thresh}/" \
         "$ROOT/include/profiler.h" > "$dir/profiler.h"
@@ -42,7 +47,7 @@ prepare() {
 build() {
     local dir="$1" extra="$2" out="$3"
     # shellcheck disable=SC2086
-    $CXX $CXXFLAGS $extra "$HERE/spill_test.cpp" "$dir/profiler_asm.cpp" "$dir/profiler.cpp" \
+    $CXX $CXXFLAGS $extra "$HERE/spill_test.cpp" "$dir/$BACKEND" "$dir/profiler.cpp" \
         -I"$dir" -o "$out"
 }
 

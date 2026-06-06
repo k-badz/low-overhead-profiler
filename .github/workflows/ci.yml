@@ -32,6 +32,25 @@ jobs:
           LOP_SKIP_OOM_TEST: "1"
         run: bash test/run_tests.sh
 
+      - name: Spill-to-disk feature tests (pure-C++ backend)
+        # Same suite, but against src/profiler_cpp.cpp, to prove the C++ hot path is correct
+        # across all event types + the double-buffer bounds-check / exhaustion path.
+        env:
+          LOP_SKIP_OOM_TEST: "1"
+          LOP_BACKEND: profiler_cpp.cpp
+        run: bash test/run_tests.sh
+
+  bench:
+    name: Tracing overhead (asm vs C++)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # advisory only: VM timing is noisy, this never gates the build
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ python3
+      - name: Benchmark both backends
+        run: bash test/run_bench.sh
+
   windows:
     name: Windows (MASM + MSVC)
     runs-on: windows-latest
@@ -46,6 +65,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path tinybuild | Out-Null
           (Get-Content src\profiler.cpp     -Raw).Replace('#define LOP_BUFFER_SIZE 0x400000U','#define LOP_BUFFER_SIZE 0x100U')   | Set-Content tinybuild\profiler.cpp
           (Get-Content src\profiler_asm.asm -Raw).Replace('LOP_BUFFER_SIZE equ 0400000h','LOP_BUFFER_SIZE equ 0100h')             | Set-Content tinybuild\profiler_asm.asm
+          (Get-Content src\profiler_cpp.cpp -Raw).Replace('#define LOP_BUFFER_SIZE 0x400000U','#define LOP_BUFFER_SIZE 0x100U')   | Set-Content tinybuild\profiler_cpp.cpp
           (Get-Content include\profiler.h   -Raw).Replace('#define LOP_SPILL_RAM_THRESHOLD 2','#define LOP_SPILL_RAM_THRESHOLD 1') | Set-Content tinybuild\profiler.h
 
       - name: Build and test (MASM + MSVC)
@@ -67,4 +87,11 @@ jobs:
           ml64 /nologo /c tinybuild\profiler_asm.asm || exit /b 1
           cl /nologo /std:c++17 /EHsc /O2 /Itinybuild test\spill_test.cpp tinybuild\profiler.cpp profiler_asm.obj /Fe:spill_test.exe || exit /b 1
           spill_test.exe 20000 || exit /b 1
+          python test\validate.py . 80000 4 || exit /b 1
+
+          rem --- pure-C++ backend on MSVC (no ml64): sample + forced-spill, common Win/Linux file ---
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp src\profiler_cpp.cpp src\profiler.cpp /Fe:example_cpp.exe || exit /b 1
+          example_cpp.exe || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Itinybuild test\spill_test.cpp tinybuild\profiler_cpp.cpp tinybuild\profiler.cpp /Fe:spill_test_cpp.exe || exit /b 1
+          spill_test_cpp.exe 20000 || exit /b 1
           python test\validate.py . 80000 4 || exit /b 1
