@@ -1,0 +1,12 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.o
+*.obj
+*.exe
+
+# Profiler trace output
+events_pid*.json
+lop_spill_pid*.tmp
