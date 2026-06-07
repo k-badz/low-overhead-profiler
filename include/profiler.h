@@ -114,10 +114,15 @@
 #define LOP_BUFFER_SIZE 0x400000U
 #endif
 
-// Number of slots in the per-thread-id lookup table. Must be >= the index range used by the hot
-// path (the low 16 bits of the thread id), i.e. 0x10000.
+// Number of slots in the per-thread-id lookup table; MUST be a power of two (the index is
+// `id-bits & (CUSTOM_TLS_SIZE - 1)`). It is the maximum number of simultaneously-live threads that
+// can be traced without two of them sharing a slot (a shared slot = a shared EventBuffer = a data
+// race in the lockless hot path). 2^17 comfortably exceeds Linux's ~32k vm.max_map_count thread cap
+// and covers up to 131072 concurrent threads on Windows. It is only a pointer array (1 MB here);
+// the 128 MB EventBuffers are still allocated lazily, per slot actually used. See lop_tls_index()
+// and tools/tls_bit_probe.cpp for how the index bits were chosen.
 #ifndef CUSTOM_TLS_SIZE
-#define CUSTOM_TLS_SIZE 0x10000
+#define CUSTOM_TLS_SIZE 0x20000
 #endif
 
 #if LOP_SPILL_TO_DISK && !LOP_DOUBLE_BUFFER
@@ -186,10 +191,18 @@ inline uint64_t lop_raw_tid() {
 }
 
 inline uint64_t lop_tls_index(uint64_t tid) {
+    // The mask is derived from the (power-of-two) table size so the two stay in sync. The shift
+    // drops the dead low bits of the platform's thread id so the index uses real entropy - chosen
+    // empirically with tools/tls_bit_probe.cpp:
 #if defined(_WIN32) || defined(_WIN64)
-    return tid & 0xFFFF;                          // Windows: mask only
+    // Windows thread ids are dense multiples of 4 (low 2 bits always 0), so >>2 yields a near
+    // perfect bijection: collision-free up to CUSTOM_TLS_SIZE concurrent threads.
+    return (tid >> 2) & (CUSTOM_TLS_SIZE - 1);
 #else
-    return (tid >> 12) & 0xFFFF;                  // Linux: shift then mask
+    // Linux id is the glibc thread pointer; threads are spaced by the page-aligned stack stride, so
+    // the low 12 bits are constant. 12 is the always-safe shift (page size); the exact stride
+    // alignment varies by environment, so we deliberately do not assume more than that.
+    return (tid >> 12) & (CUSTOM_TLS_SIZE - 1);
 #endif
 }
 
