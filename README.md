@@ -48,7 +48,14 @@ no assembler, no separate backend to build).
 
 * Compiling the example (which itself defines `LOP_IMPLEMENTATION`) is just:
   `g++ samples/example.cpp -std=c++17 -Iinclude -O2 -pthread`
-* On Windows/MSVC: `cl /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp`
+* On Windows/MSVC, from an **x64** Native Tools Command Prompt for VS (or after running
+  `vcvarsall.bat x64`): `cl /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp`
+
+> **x86-64 only.** The hot path uses `rdtsc` and reads the thread id straight from the x64
+> TEB/TLS segment, so it must be built for **x64**. A plain `cl` in a regular Developer
+> Command Prompt targets 32-bit x86 and fails with
+> `error C3861: '__readgsqword': identifier not found` — open the *x64* Native Tools prompt
+> (or run `vcvarsall.bat x64`) instead. 32-bit x86 and ARM64 are not supported.
 
 The compile-time options (`LOP_DOUBLE_BUFFER`, `LOP_SPILL_TO_DISK`, `LOP_SPILL_RAM_THRESHOLD`,
 `LOP_BUFFER_SIZE`) live only in `profiler.h` and can be overridden with `-D` or by `#define`-ing
