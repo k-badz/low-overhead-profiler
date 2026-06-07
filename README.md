@@ -8,11 +8,22 @@ It is ideal if you need to profile the execution of a system that has complicate
 
 This code should not be used in a product, it omits various security checks for performance purposes and might result in buffer overflows if it runs for too long due to limited capacity of event tables. Consider this an internal only development tool.
 
-    UPDATE:  
-    As of version v0.2, there is additional mode of operation I named "safer" mode. It allows profiler
-    to continue to run even if buffers were exhausted and it will flush each exhausted set of buffers
-    to separate trace file. You can find details of usage, including limitations, in the profiler.h
-    header file.
+    UPDATE:
+    The profiler now uses per-thread double buffering (LOP_DOUBLE_BUFFER, on by default). When a
+    thread fills its event buffer it instantly swaps to a pre-allocated backup and keeps tracing,
+    while a background thread prepares the next backup. All filled buffers are kept and merged into
+    a single trace at flush time, so it no longer crashes on exhaustion and no events are lost. The
+    trade-off is memory: filled buffers are retained in RAM, so call profiler_flush() periodically
+    during very long sessions. Set LOP_DOUBLE_BUFFER to 0 to get the original zero-overhead unsafe
+    mode (no bounds check, can overflow). See the profiler.h header for details.
+
+    To bound that memory growth automatically, LOP_SPILL_TO_DISK (also on by default) adds a
+    low-priority background thread that streams filled buffers to a temporary file as raw binary
+    and frees their RAM; at flush time the trace is assembled from both the spilled segments and
+    whatever is still in RAM, so nothing is lost. It stays out of the hot path entirely and, if a
+    buffer allocation ever fails, it boosts the spiller to reclaim RAM instead of crashing. The
+    spill file holds raw (still-valid) name pointers, so it is only meaningful within the same
+    process run. Set LOP_SPILL_TO_DISK to 0 to keep all filled buffers in RAM until flush.
 
 For more details about motivation, design decisions, usage, overhead causes, limitations, possible recommended tweaks you can make for different use cases, maybe more details about setup, etc.. Feel free to check my [article](https://k-badz.github.io/optimization/low-overhead-profiler/).
 
@@ -20,15 +31,28 @@ Also, if you require something that would allow you to trace a binary instead, y
 
 ## How to setup:
 
-1. Copy the include/profiler.h and src/profiler.cpp directories somewhere into your project
-2. Also copy the interesting src/profiler_asm file from the src directory (choose .asm for Windows MASM and .cpp for Linux GCC inline assembly)
-3. Setup compilation appropriately to your build engine. You need to enable C++17 in your compiler for these files.
-4. Compile and enjoy.
+It is a **header-only** library — one file, pure C++17, same code on Windows and Linux (no MASM,
+no assembler, no separate backend to build).
 
-* For linux, compiling example is as simple as this:  
-`g++ samples/example.cpp src/profiler_asm.cpp src/profiler.cpp -std=c++17 -Iinclude -O2`
+1. Copy `include/profiler.h` into your project and `#include "profiler.h"` wherever you trace.
+2. In **exactly one** `.cpp` of your program, define `LOP_IMPLEMENTATION` before the include — that
+   translation unit compiles the engine (background threads, flush, etc.):
 
-* For windows, you need to add the files to solution, enable C++17, enable MASM compiler for asm file, add include directory path, and then build the solution.
+   ```cpp
+   #define LOP_IMPLEMENTATION
+   #include "profiler.h"
+   ```
+
+   (Zero such TUs → undefined references; more than one → duplicate symbols.)
+3. Build with C++17 and a thread library. On Linux/GCC that means `-pthread`.
+
+* Compiling the example (which itself defines `LOP_IMPLEMENTATION`) is just:
+  `g++ samples/example.cpp -std=c++17 -Iinclude -O2 -pthread`
+* On Windows/MSVC: `cl /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp`
+
+The compile-time options (`LOP_DOUBLE_BUFFER`, `LOP_SPILL_TO_DISK`, `LOP_SPILL_RAM_THRESHOLD`,
+`LOP_BUFFER_SIZE`) live only in `profiler.h` and can be overridden with `-D` or by `#define`-ing
+them before the include — a single source of truth.
 
 ## How to use:
 

@@ -1,0 +1,32 @@
+name: tls-probe
+
+# Manual-only diagnostic: runs tools/tls_bit_probe.cpp on Linux and Windows to inspect the OS
+# thread-id layout and verify the custom_tls index bits stay collision-free. Trigger it by hand
+# from the Actions tab (Run workflow) when changing CUSTOM_TLS_SIZE / lop_tls_index() or to
+# re-check on a new runner image. It is not part of the normal build (it spawns ~200k threads).
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: probe (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y g++
+      - run: g++ tools/tls_bit_probe.cpp -std=c++17 -Iinclude -O2 -pthread -o probe
+      - run: ./probe 200000
+
+  windows:
+    name: probe (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run probe (small per-thread stacks to start many threads)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH ( echo Visual Studio with C++ tools not found & exit /b 1 )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude tools\tls_bit_probe.cpp /Fe:probe.exe /link /STACK:0x10000,0x1000 || exit /b 1
+          probe.exe 200000 || exit /b 1

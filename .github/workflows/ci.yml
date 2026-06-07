@@ -1,0 +1,77 @@
+name: build-and-test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (GCC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ python3
+
+      - name: Build & smoke-run samples (header-only)
+        run: |
+          g++ samples/example.cpp -std=c++17 -Iinclude -O2 -pthread -o example
+          g++ samples/context_example.cpp -std=c++17 -Iinclude -O2 -pthread -o context_example
+          ./example && ./context_example
+
+      - name: Header-only multi-TU ODR check
+        # Two TUs include the header; exactly one defines LOP_IMPLEMENTATION. Must link cleanly
+        # (inline globals/functions merge, engine symbols resolve once) and run.
+        run: |
+          printf '#define LOP_IMPLEMENTATION\n#include "profiler.h"\nvoid other();\nint main(){LOP::profiler_enable();LOP::emit_begin_event("a");other();LOP::emit_end_event("a");LOP::profiler_disable();LOP::profiler_flush();}\n' > a.cpp
+          printf '#include "profiler.h"\nvoid other(){LOP::emit_begin_event("b");LOP::emit_end_event("b");}\n' > b.cpp
+          g++ -std=c++17 -O2 -Iinclude -pthread -Wall -Wextra a.cpp b.cpp -o odr && ./odr >/dev/null && echo "ODR OK"
+
+      - name: Spill-to-disk feature tests
+        # The OOM relief-valve scenario is a timing/memory-sensitive stress test, so it is exercised
+        # locally rather than in CI; the forced-spill (ASan/UBSan), ON/OFF equivalence and flag-off
+        # scenarios are deterministic and run here.
+        env:
+          LOP_SKIP_OOM_TEST: "1"
+        run: bash test/run_tests.sh
+
+  bench:
+    name: Tracing overhead
+    runs-on: ubuntu-latest
+    continue-on-error: true   # advisory only: VM timing is noisy, this never gates the build
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ python3
+      - name: Benchmark
+        run: bash test/run_bench.sh
+
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      # No setup-python action: windows-latest ships Python on PATH. No MASM/ml64 anymore - the
+      # profiler is pure header-only C++. The MSVC environment is set up inline via vcvars64.bat.
+
+      - name: Build and test (MSVC)
+        shell: cmd
+        run: |
+          rem --- locate Visual Studio and enter the x64 developer environment inline ---
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH ( echo Visual Studio with C++ tools not found & exit /b 1 )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+
+          rem --- samples (each defines LOP_IMPLEMENTATION; header-only) ---
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\example.cpp /Fe:example.exe || exit /b 1
+          example.exe || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude samples\context_example.cpp /Fe:context_example.exe || exit /b 1
+          context_example.exe || exit /b 1
+
+          rem --- tiny-buffer forced-spill test via -D overrides, then validate the merged trace ---
+          cl /nologo /std:c++17 /EHsc /O2 /Iinclude /DLOP_BUFFER_SIZE=0x100U /DLOP_SPILL_RAM_THRESHOLD=1 test\spill_test.cpp /Fe:spill_test.exe || exit /b 1
+          spill_test.exe 20000 || exit /b 1
+          python test\validate.py . 80000 4 || exit /b 1
